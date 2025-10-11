@@ -1,1 +1,8 @@
 pandas
+torch
+torchvision
+Pillow
+tqdm
+transformers
+sentence-transformers
+safetensors
