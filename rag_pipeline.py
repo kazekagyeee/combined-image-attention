@@ -15,7 +15,7 @@ import os
 import json
 import argparse
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 from tqdm import tqdm
 
 import torch
@@ -71,23 +71,23 @@ class OwlViTDetector(DetectorBase):
         self.processor = OwlViTProcessor.from_pretrained(model_name)
         self.model = OwlViTForObjectDetection.from_pretrained(model_name).to(device)
 
-    def detect(self, image: Image.Image, text_queries: list, box_threshold=0.3):
+    def detect(self, image: Image.Image, text_queries: list, box_threshold=0.3, visualize=True):
         """
         Детектирует объекты на изображении по текстовым запросам.
-        Возвращает список:
-        [
-            {"bbox": (x0, y0, x1, y1), "score": float, "label": "cat" (or text query matched)}
-        ]
+        Возвращает:
+            detections: [
+                {"bbox": (x0, y0, x1, y1), "score": float, "label": "cat"}
+            ],
+            annotated_image: PIL.Image (если visualize=True)
         """
-
-        # 1️⃣ Подготовка данных для модели
+        # 1️⃣ Подготовка данных
         inputs = self.processor(text=text_queries, images=image, return_tensors="pt").to(self.model.device)
 
         # 2️⃣ Прогон через модель
         with torch.no_grad():
             outputs = self.model(**inputs)
 
-        # 3️⃣ Постобработка (конвертация предсказаний в реальные координаты)
+        # 3️⃣ Постобработка
         target_sizes = torch.tensor([image.size[::-1]]).to(self.model.device)  # (H, W)
         results = self.processor.post_process_object_detection(
             outputs=outputs,
@@ -95,39 +95,38 @@ class OwlViTDetector(DetectorBase):
             target_sizes=target_sizes
         )[0]
 
-        # 4️⃣ Формирование списка детекций
         detections = []
         for score, label, box in zip(results["scores"], results["labels"], results["boxes"]):
             detections.append({
-                "bbox": tuple(box.tolist()),           # координаты (x0, y0, x1, y1)
-                "score": float(score.item()),           # уверенность
-                "label": text_queries[label] if label < len(text_queries) else str(label)  # текст запроса
+                "bbox": tuple(map(float, box.tolist())),
+                "score": float(score.item()),
+                "label": text_queries[label] if label < len(text_queries) else str(label)
             })
 
-        return detections
+        # 4️⃣ Визуализация (опционально)
+        annotated_image = image.copy()
+        if visualize:
+            draw = ImageDraw.Draw(annotated_image)
+            try:
+                font = ImageFont.truetype("arial.ttf", size=16)
+            except:
+                font = ImageFont.load_default()
 
+            for det in detections:
+                x0, y0, x1, y1 = det["bbox"]
+                label = det["label"]
+                score = det["score"]
+                color = (255, 0, 0)  # красный bbox
+                draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
+                text = f"{label} {score:.2f}"
+                text_size = draw.textsize(text, font=font)
+                draw.rectangle(
+                    [x0, y0 - text_size[1], x0 + text_size[0], y0],
+                    fill=color
+                )
+                draw.text((x0, y0 - text_size[1]), text, fill="white", font=font)
 
-class OwlViTDetector(DetectorBase):
-    def __init__(self, model_name='google/owlvit-base-patch32', device='cpu'):
-        super().__init__(device)
-        print("Loading OWL-ViT:", model_name)
-        self.processor = OwlViTProcessor.from_pretrained(model_name)
-        self.model = OwlViTForObjectDetection.from_pretrained(model_name).to(device)
-
-    def detect(self, image: Image.Image, text_queries: list, box_threshold=0.3):
-        # prepare queries prompt as list of strings
-        inputs = self.processor(text=text_queries, images=image, return_tensors="pt").to(self.model.device)
-        outputs = self.model(**inputs)
-
-        # convert outputs (following HF OwlViT example)
-        target_sizes = torch.tensor([image.size[::-1]]).to(self.model.device)  # (H,W)
-        results = self.processor.post_process_object_detection(outputs=outputs, threshold=box_threshold, target_sizes=target_sizes)[0]
-        detections = []
-        for score, label, box in zip(results["scores"].tolist(), results["labels"].tolist(), results["boxes"].tolist()):
-            label_str = self.model.config.id2label[label] if hasattr(self.model.config, "id2label") else str(label)
-            # boxes are [x0, y0, x1, y1] in pixels
-            detections.append({"bbox": tuple(box), "score": float(score), "label": label_str})
-        return detections
+        return detections, annotated_image
 
 
 class GroundingDINOPlaceholder(DetectorBase):
