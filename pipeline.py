@@ -4,7 +4,7 @@ from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
-from detectors import OwlViTDetector, GroundingDINOPlaceholder, HAS_GROUNDING_DINO
+from detectors import OwlViTDetector, GroundingDINOPlaceholder, HAS_GROUNDING_DINO, YOLOv8Detector
 from captioning import Captioner, TextEmbedder
 from config import PipelineConfig
 
@@ -26,8 +26,10 @@ class VLMPipeline:
             if not HAS_GROUNDING_DINO:
                 raise RuntimeError("Grounding DINO не доступен. Установи его или используй owlvit.")
             return GroundingDINOPlaceholder(device=self.config.device)
+        elif self.config.model.lower() == "yolov8":
+            return YOLOv8Detector(device=self.config.device)
         else:
-            raise ValueError("Unknown detector backend: choose 'owlvit' or 'groundingdino'")
+            raise ValueError("Unknown detector backend")
 
     def process_image(self, image_path: str) -> list:
         """

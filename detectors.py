@@ -1,7 +1,8 @@
 import torch
-from PIL import Image, ImageDraw, ImageFont
-from transformers import OwlViTProcessor, OwlViTForObjectDetection
+from PIL import Image
+from transformers import Owlv2Processor, Owlv2ForObjectDetection
 from abc import ABC, abstractmethod
+from ultralytics import YOLO
 
 # Попытка импортировать GroundingDINO
 HAS_GROUNDING_DINO = False
@@ -16,7 +17,7 @@ except Exception:
 class DetectorBase(ABC):
     """Базовый класс для детекторов объектов"""
 
-    def __init__(self, device='cpu'):
+    def __init__(self, device='gpu'):
         self.device = device
 
     @abstractmethod
@@ -38,11 +39,11 @@ class DetectorBase(ABC):
 class OwlViTDetector(DetectorBase):
     """Детектор объектов на основе OWL-ViT"""
 
-    def __init__(self, model_name='google/owlvit-base-patch32', device='gpu'):
+    def __init__(self, model_name='google/owlv2-base-patch16-ensemble', device='gpu'):
         super().__init__(device)
         print(f"🔍 Loading OWL-ViT model: {model_name} ...")
-        self.processor = OwlViTProcessor.from_pretrained(model_name)
-        self.model = OwlViTForObjectDetection.from_pretrained(model_name).to(device)
+        self.processor = Owlv2Processor.from_pretrained(model_name)
+        self.model = Owlv2ForObjectDetection.from_pretrained(model_name).to(device)
 
     def detect(self, image: Image.Image, text_queries: list, box_threshold=0.3, visualize=True):
         """
@@ -83,28 +84,60 @@ class OwlViTDetector(DetectorBase):
                 "label": text_queries[label] if label < len(text_queries) else str(label)
             })
 
-        # 4️⃣ Визуализация (опционально)
-        annotated_image = image.copy()
-        if visualize:
-            draw = ImageDraw.Draw(annotated_image)
-            try:
-                font = ImageFont.truetype("arial.ttf", size=16)
-            except:
-                font = ImageFont.load_default()
+        return detections, image
 
-            for det in detections:
-                x0, y0, x1, y1 = det["bbox"]
-                label = det["label"]
-                score = det["score"]
-                color = (255, 0, 0)  # красный bbox
-                draw.rectangle([x0, y0, x1, y1], outline=color, width=3)
-                text = f"{label} {score:.2f}"
-                bbox = draw.textbbox((x0, y0 - 16), text, font=font)
-                draw.rectangle(bbox, fill=color)
-                draw.text((x0, y0 - 16), text, fill="white", font=font)
 
-        return detections, annotated_image
+class YOLOv8Detector(DetectorBase):
+    """YOLOv8 детектор с поддержкой сегментации"""
 
+    def __init__(self, model_name='yolov8x-seg.pt', device='gpu'):
+        super().__init__(device)
+        print(f"🧠 Loading YOLOv8 model: {model_name} ...")
+        self.model = YOLO(model_name)
+        self.model.to(device)
+
+    def detect(self, image: Image.Image, text_queries=None, box_threshold=0.3, visualize=True):
+        """
+        Выполняет сегментацию и детекцию объектов YOLOv8.
+
+        Args:
+            image: PIL.Image
+            text_queries: игнорируется (YOLO не использует текст)
+            box_threshold: порог уверенности
+            visualize: рисовать ли результат
+
+        Returns:
+            detections: [
+                {"bbox": (x0, y0, x1, y1), "score": float, "label": str, "mask": np.ndarray | None}
+            ],
+            annotated_image: PIL.Image (если visualize=True)
+        """
+        results = self.model.predict(image, conf=box_threshold, device=self.device, verbose=False)
+        detections = []
+
+        for r in results:
+            boxes = r.boxes
+            masks = getattr(r, 'masks', None)
+            names = self.model.names
+
+            for i, box in enumerate(boxes):
+                xyxy = box.xyxy[0].tolist()
+                score = float(box.conf.item())
+                cls = int(box.cls.item())
+                label = names.get(cls, str(cls))
+
+                mask = None
+                if masks is not None and len(masks.data) > i:
+                    mask = masks.data[i].cpu().numpy()
+
+                detections.append({
+                    "bbox": tuple(map(float, xyxy)),
+                    "score": score,
+                    "label": label,
+                    "mask": mask  # np.ndarray (H, W) или None
+                })
+
+        return detections, image
 
 class GroundingDINOPlaceholder(DetectorBase):
     """
