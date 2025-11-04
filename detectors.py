@@ -96,13 +96,12 @@ class YOLOv8Detector(DetectorBase):
         self.model = YOLO(model_name)
         self.model.to(device)
 
-    def detect(self, image: Image.Image, text_queries=None, box_threshold=0.3, visualize=True):
+    def detect(self, image: Image.Image, box_threshold=0.3, visualize=True):
         """
         Выполняет сегментацию и детекцию объектов YOLOv8.
 
         Args:
             image: PIL.Image
-            text_queries: игнорируется (YOLO не использует текст)
             box_threshold: порог уверенности
             visualize: рисовать ли результат
 
