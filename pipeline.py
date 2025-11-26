@@ -1,12 +1,27 @@
 import os
+import re
 import json
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
-from detectors import YOLOv8Detector
-from captioning import Captioner, TextEmbedderBERT as TextEmbedder
+from detectors import YOLOv8Detector, YOLOv13Detector
+from captioning import CaptionerQwen, CaptionerBLIP, TextEmbedderBERT as TextEmbedder
 from config import PipelineConfig
+
+
+def clean_text_from_file(file_path):
+    # Читаем файл
+    with open(file_path, 'r', encoding='utf-8') as file:
+        text = file.read()
+
+    # Оставляем только буквы, цифры, пробелы и знаки препинания
+    cleaned_text = re.sub(r'[^\w\s\.,!?;:()\-—\"\']', '', text)
+
+    # Убираем лишние пробелы
+    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
+
+    return cleaned_text
 
 
 class VLMPipeline:
@@ -14,15 +29,18 @@ class VLMPipeline:
 
     def __init__(self, config: PipelineConfig):
         self.config = config
-        # always use YOLOv8Detector as requested
         self.detector = YOLOv8Detector(device=self.config.device)
-        self.captioner = Captioner(device=config.device)
+        self.captioner = CaptionerQwen(device=config.device) if config.captioner_model == 'qwen' else CaptionerBLIP(device=config.device)
         # use BERT-based contextual embedder
         self.embedder = TextEmbedder(device=config.device)
 
-    def process_image(self, image_path: str) -> list:
-        """Обрабатывает одно изображение: детект, кропы, BLIP captions (с учетом prompt), BERT-эмбеддинги."""
+    def process_image(self, image_path: str, prompt: str = None) -> list:
+        """Обрабатывает одно изображение с возможностью указать индивидуальный промт."""
         img = Image.open(image_path).convert("RGB")
+
+        # Используем переданный промт или глобальный из конфига
+        current_prompt = self.config.system_prompt + prompt if prompt is not None else self.config.system_prompt
+
         # YOLOv8 detects without text queries
         detections, _ = self.detector.detect(img, box_threshold=self.config.box_threshold,
                                              visualize=self.config.visualise)
@@ -48,24 +66,24 @@ class VLMPipeline:
         for i, (d, coeff) in enumerate(zip(detections, coeffs)):
             bbox = d["bbox"]
             score = d["score"]
-            label = d.get("label", "")
             crop_name = f"{base_name}_crop_{i}.jpg"
             crop_path = os.path.join(self.config.out_dir, crop_name)
             _, (w, h) = save_crop(img, bbox, crop_path)
 
-            # caption the crop using BLIP and include the global prompt from config
-            caption = self.captioner.describe(Image.open(crop_path).convert("RGB"),
-                                              prompt=self.config.prompt,
-                                              label=label,
-                                              max_length=self.config.caption_max_length)
+            # caption the crop using BLIP with current prompt
+            caption = self.captioner.describe(
+                Image.open(crop_path).convert("RGB"),
+                prompt=current_prompt,  # Используем текущий промт
+                max_length=self.config.caption_max_length
+            )
 
             items.append({
                 "crop_path": os.path.abspath(crop_path),
                 "orig_path": os.path.abspath(image_path),
                 "bbox": [float(x) for x in bbox],
                 "score": float(score),
-                "label": label,
                 "caption": caption,
+                "prompt_used": current_prompt,  # Сохраняем использованный промт
                 "area": float(areas[i]),
                 "rel_size_coeff": float(coeff),
                 "crop_wh": [w, h]
@@ -87,8 +105,15 @@ class VLMPipeline:
         image_files = list(Path(self.config.input_dir).glob("*"))
         image_files = [str(p) for p in image_files if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".bmp"]]
 
-        for img_path in tqdm(image_files, desc="Processing images"):
-            items = self.process_image(img_path)
+        for img_path in tqdm(image_files, desc="Processing images with individual prompts"):
+            # Получаем промт для текущего изображения
+            img_name = Path(img_path).name
+            # По контракту название промта такое же как у изображения
+            prompt = clean_text_from_file(
+                self.config.input_dir + '/' + img_name.replace('.png', '.txt')
+            )
+
+            items = self.process_image(img_path, prompt=prompt)
             all_metadata.extend(items)
 
         # normalize rel_size_coeff to sum=1 across all found crops

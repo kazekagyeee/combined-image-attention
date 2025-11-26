@@ -1,17 +1,6 @@
-import torch
 from PIL import Image
-from transformers import Owlv2Processor, Owlv2ForObjectDetection
 from abc import ABC, abstractmethod
 from ultralytics import YOLO
-
-# Попытка импортировать GroundingDINO
-HAS_GROUNDING_DINO = False
-try:
-    from groundingdino.models import build_model as gd_build_model  # type: ignore
-
-    HAS_GROUNDING_DINO = True
-except Exception:
-    HAS_GROUNDING_DINO = False
 
 
 class DetectorBase(ABC):
@@ -21,13 +10,12 @@ class DetectorBase(ABC):
         self.device = device
 
     @abstractmethod
-    def detect(self, image: Image.Image, text_queries: list, box_threshold=0.3):
+    def detect(self, image: Image.Image, box_threshold=0.3):
         """
         Детектирует объекты на изображении по текстовым запросам.
 
         Args:
             image: PIL Image для обработки
-            text_queries: Список текстовых запросов для поиска объектов
             box_threshold: Порог уверенности для детектирования
 
         Returns:

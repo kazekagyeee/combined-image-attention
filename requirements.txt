@@ -7,3 +7,5 @@ transformers
 sentence-transformers
 safetensors
 ultralytics
+pymupdf
+accelerate
