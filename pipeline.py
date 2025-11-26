@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
-from detectors import YOLOv8Detector, YOLOv13Detector
+from detectors import YOLOv8Detector
 from captioning import CaptionerQwen, CaptionerBLIP, TextEmbedderBERT as TextEmbedder
 from config import PipelineConfig
 
