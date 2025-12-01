@@ -14,7 +14,6 @@ def parse_args():
     parser.add_argument("--system_prompt", default=default_cfg.system_prompt, help="comma-separated object queries")
     parser.add_argument("--device", default=default_cfg.device if torch.cuda.is_available() else "cpu", help="cpu or cuda")
     parser.add_argument("--json", default=default_cfg.json_filename, help="json filename for metadata")
-    parser.add_argument("--visualise", default=default_cfg.visualise, help="True or False - visualisation of the image processing")
     return parser.parse_args()
 
 
@@ -30,7 +29,6 @@ def main():
         system_prompt=args.system_prompt,
         device=args.device,
         json_filename=args.json,
-        visualise=args.visualise,
     )
 
     # Создаем и запускаем pipeline

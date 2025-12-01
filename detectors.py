@@ -1,6 +1,11 @@
+import os
+import tempfile
+
 from PIL import Image
 from abc import ABC, abstractmethod
 from ultralytics import YOLO
+from os.path import join as pjoin
+from uied_cv import ip_region_proposal as ip
 
 
 class DetectorBase(ABC):
@@ -27,20 +32,19 @@ class DetectorBase(ABC):
 class YOLOv8Detector(DetectorBase):
     """YOLOv8 детектор с поддержкой сегментации"""
 
-    def __init__(self, model_name='yolov8x-seg.pt', device='cuda'):
+    def __init__(self, model_name='yolov8n.pt', device='cuda'):
         super().__init__(device)
         print(f"🧠 Loading YOLOv8 model: {model_name} ...")
         self.model = YOLO(model_name)
         self.model.to(device)
 
-    def detect(self, image: Image.Image, box_threshold=0.3, visualize=True):
+    def detect(self, image: Image.Image, box_threshold=0.3):
         """
         Выполняет сегментацию и детекцию объектов YOLOv8.
 
         Args:
             image: PIL.Image
             box_threshold: порог уверенности
-            visualize: рисовать ли результат
 
         Returns:
             detections: [
@@ -74,3 +78,74 @@ class YOLOv8Detector(DetectorBase):
                 })
 
         return detections, image
+
+class UIEDDetector(DetectorBase):
+    """
+    Детектор UI-компонентов на основе UIED (CV метод)
+    """
+
+    def __init__(self, device='cpu', resized_height=800, key_params=None):
+        super().__init__(device)
+        self.resized_height = resized_height
+        self.key_params = key_params or {
+            'min-grad': 10,
+            'ffl-block': 5,
+            'min-ele-area': 50,
+            'merge-contained-ele': True,
+            'merge-line-to-paragraph': True,
+            'remove-bar': True
+        }
+
+    def detect(self, image: Image.Image, box_threshold=0.3):
+        """
+        Запускает UIED и возвращает список компонент в виде:
+        [
+          { "bbox": [x1, y1, x2, y2], "label": "component" }
+        ]
+        """
+
+        # --- 1) сохраняем изображение во временную папку ---
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = pjoin(tmpdir, "input.png")
+            output_dir = pjoin(tmpdir, "out")
+            os.makedirs(output_dir, exist_ok=True)
+
+            image.save(input_path)
+
+            # --- 3) Запуск UIED ---
+            ip.compo_detection(
+                input_img_path=input_path,
+                output_root=output_dir,
+                uied_params=self.key_params,
+                classifier=None,
+                resize_by_height=None,
+                show=False
+            )
+
+            # --- 4) UIED сохраняет промежуточные файлы ---
+            # основной результат лежит в out/ip/compo.json
+            input_name = os.path.splitext(os.path.basename(input_path))[0]
+            compo_json_path = pjoin(output_dir, "ip", f"{input_name}.json")
+
+            if not os.path.exists(compo_json_path):
+                print("⚠️ UIED did not generate compo.json")
+                return []
+
+            # --- 5) Читаем JSON и приводим к формату DetectorBase ---
+            import json
+            with open(compo_json_path, "r") as f:
+                compo_info = json.load(f)
+
+            # w_orig, h_orig = image.size
+            # scale = self.resized_height / h_orig
+
+            results = []
+            for comp in compo_info.get("compos", []):
+                x1, y1, x2, y2 = comp["column_min"], comp["row_min"], comp["column_max"], comp["row_max"]
+                results.append({
+                    "bbox": [x1, y1, x2, y2],
+                    "label": comp.get("class", "component"),
+                    "score": 1.0  # UIED не даёт скоры, ставим 1
+                })
+
+            return results, image

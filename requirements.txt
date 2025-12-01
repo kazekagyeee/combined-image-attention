@@ -9,3 +9,4 @@ safetensors
 ultralytics
 pymupdf
 accelerate
+opencv-python

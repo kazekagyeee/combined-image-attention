@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
-from detectors import YOLOv8Detector
+from detectors import YOLOv8Detector, UIEDDetector
 from captioning import CaptionerQwen, CaptionerBLIP, TextEmbedderBERT as TextEmbedder
 from config import PipelineConfig
 
@@ -29,8 +29,23 @@ class VLMPipeline:
 
     def __init__(self, config: PipelineConfig):
         self.config = config
-        self.detector = YOLOv8Detector(device=self.config.device)
-        self.captioner = CaptionerQwen(device=config.device) if config.captioner_model == 'qwen' else CaptionerBLIP(device=config.device)
+
+        if config.detector_model == 'yolov8':
+            self.detector = YOLOv8Detector(device=self.config.device)
+        elif config.detector_model == 'uied_cv':
+            self.detector = UIEDDetector(device=self.config.device)
+        else:
+            self.detector = None
+            print("Invalid detector model")
+
+        if config.captioner_model == 'qwen':
+            self.captioner = CaptionerQwen(device=config.device)
+        elif config.captioner_model == 'blip':
+            self.captioner = CaptionerBLIP(device=config.device)
+        else:
+            self.captioner = None
+            print("Invalid captioner model")
+
         # use BERT-based contextual embedder
         self.embedder = TextEmbedder(device=config.device)
 
@@ -42,8 +57,7 @@ class VLMPipeline:
         current_prompt = self.config.system_prompt + prompt if prompt is not None else self.config.system_prompt
 
         # YOLOv8 detects without text queries
-        detections, _ = self.detector.detect(img, box_threshold=self.config.box_threshold,
-                                             visualize=self.config.visualise)
+        detections, _ = self.detector.detect(img, box_threshold=self.config.box_threshold)
 
         if not detections:
             return []
