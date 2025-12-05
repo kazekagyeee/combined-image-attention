@@ -104,6 +104,47 @@ class UIEDDetector(DetectorBase):
         ]
         """
 
+        # Определяет находятся ли сегменты рядом
+        def boxes_close(a, b, max_dist=15):
+            # вертикальное перекрытие
+            vert_overlap = min(a[3], b[3]) - max(a[1], b[1])
+            if vert_overlap <= 0:
+                return False
+
+            # горизонтальное расстояние
+            dist = min(abs(a[0] - b[2]), abs(b[0] - a[2]))
+
+            return dist < max_dist
+
+        # Объединяет рядом стоящие сегменты
+        def merge_uied_boxes(boxes):
+            merged = True
+            while merged:
+                merged = False
+                new = []
+                while boxes:
+                    a = boxes.pop(0)
+                    merged_with_a = False
+
+                    for i, b in enumerate(boxes):
+                        if boxes_close(a, b, max_dist=20):
+                            nx1 = min(a[0], b[0])
+                            ny1 = min(a[1], b[1])
+                            nx2 = max(a[2], b[2])
+                            ny2 = max(a[3], b[3])
+                            new.append([nx1, ny1, nx2, ny2])
+                            boxes.pop(i)
+                            merged_with_a = True
+                            merged = True
+                            break
+
+                    if not merged_with_a:
+                        new.append(a)
+
+                boxes = new
+
+            return boxes
+
         # --- 1) сохраняем изображение во временную папку ---
         with tempfile.TemporaryDirectory() as tmpdir:
             input_path = pjoin(tmpdir, "input.png")
@@ -136,16 +177,16 @@ class UIEDDetector(DetectorBase):
             with open(compo_json_path, "r") as f:
                 compo_info = json.load(f)
 
-            # w_orig, h_orig = image.size
-            # scale = self.resized_height / h_orig
-
-            results = []
+            raw_boxes = []
             for comp in compo_info.get("compos", []):
                 x1, y1, x2, y2 = comp["column_min"], comp["row_min"], comp["column_max"], comp["row_max"]
-                results.append({
-                    "bbox": [x1, y1, x2, y2],
-                    "label": comp.get("class", "component"),
-                    "score": 1.0  # UIED не даёт скоры, ставим 1
-                })
+                raw_boxes.append([x1, y1, x2, y2])
+
+            merged_boxes = merge_uied_boxes(raw_boxes)
+
+            results = [
+                {"bbox": b, "label": "component", "score": 1.0}
+                for b in merged_boxes
+            ]
 
             return results, image

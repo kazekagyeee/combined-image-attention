@@ -84,8 +84,8 @@ class VLMPipeline:
             crop_path = os.path.join(self.config.out_dir, crop_name)
             _, (w, h) = save_crop(img, bbox, crop_path)
 
-            # caption the crop using BLIP with current prompt
-            caption = self.captioner.describe(
+            caption = self.captioner.describe_two_images(
+                img,
                 Image.open(crop_path).convert("RGB"),
                 prompt=current_prompt,  # Используем текущий промт
                 max_length=self.config.caption_max_length
