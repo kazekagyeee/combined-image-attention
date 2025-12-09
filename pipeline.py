@@ -6,7 +6,7 @@ from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
 from detectors import YOLOv8Detector, UIEDDetector
-from captioning import CaptionerQwen, CaptionerBLIP, TextEmbedderBERT as TextEmbedder
+from captioning import CaptionerQwen, CaptionerBLIP, CaptionerGLM, CaptionerPaliGemma, TextEmbedderBERT as TextEmbedder
 from config import PipelineConfig
 
 
@@ -42,6 +42,10 @@ class VLMPipeline:
             self.captioner = CaptionerQwen(device=config.device)
         elif config.captioner_model == 'blip':
             self.captioner = CaptionerBLIP(device=config.device)
+        elif config.captioner_model == 'glm':
+            self.captioner = CaptionerGLM(device=config.device)
+        elif config.captioner_model == 'paligemma':
+            self.captioner = CaptionerPaliGemma(device=config.device)
         else:
             self.captioner = None
             print("Invalid captioner model")
@@ -56,7 +60,6 @@ class VLMPipeline:
         # Используем переданный промт или глобальный из конфига
         current_prompt = self.config.system_prompt + prompt if prompt is not None else self.config.system_prompt
 
-        # YOLOv8 detects without text queries
         detections, _ = self.detector.detect(img, box_threshold=self.config.box_threshold)
 
         if not detections:

@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 from PIL import Image
-from transformers import Qwen2_5_VLForConditionalGeneration, Blip2Processor, Blip2ForConditionalGeneration, AutoProcessor, AutoTokenizer, AutoModel
+from transformers import Qwen2_5_VLForConditionalGeneration, Blip2Processor, Blip2ForConditionalGeneration, AutoProcessor, AutoTokenizer, AutoModel, PaliGemmaProcessor, PaliGemmaForConditionalGeneration
 import torch
 import numpy as np
 
@@ -218,6 +218,210 @@ class CaptionerQwen(CaptionerBase):
         ).strip()
 
         return caption
+
+
+class CaptionerGLM(CaptionerBase):
+    """Генератор текстовых описаний с помощью GLM-4.1V-9B-Thinking."""
+
+    def __init__(self, model_name="THUDM/glm-4v-9b", device='cuda'):
+        super().__init__(device)
+        print("Loading GLM-4.1V-9B-Thinking model:", model_name)
+
+        # Для GLM используем ChatGLMProcessor
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            trust_remote_code=True
+        )
+        self.model = AutoModel.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True
+        ).eval()
+
+        self.max_length = 512
+
+    def describe(self, image: Image.Image, prompt: str = None, max_length=128) -> str:
+        """
+        Генерирует описание для одного изображения.
+        """
+        # GLM ожидает историю сообщений в формате (role, content)
+        history = []
+        query = prompt or "Describe this image."
+
+        # Преобразуем PIL Image в base64 для GLM
+        import base64
+        from io import BytesIO
+
+        buffered = BytesIO()
+        image.save(buffered, format="JPEG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode()
+
+        # Формируем сообщение с изображением
+        response, history = self.model.chat(
+            self.tokenizer,
+            query=query,
+            history=history,
+            image=img_base64,
+            do_sample=True,
+            temperature=0.6,
+            top_p=0.75,
+            max_length=max_length,
+        )
+
+        return response.strip()
+
+    def describe_two_images(self, full_image: Image.Image, cropped_image: Image.Image,
+                            prompt: str = None, max_length=256) -> str:
+        """
+        Генерирует описание для двух изображений с использованием GLM.
+
+        Примечание: GLM поддерживает мультимодальный ввод через base64 строки.
+        Для двух изображений можно передать список или объединенное изображение.
+        """
+        import base64
+        from io import BytesIO
+
+        # Преобразуем оба изображения в base64
+        def image_to_base64(img):
+            buffered = BytesIO()
+            img.save(buffered, format="JPEG")
+            return base64.b64encode(buffered.getvalue()).decode()
+
+        img1_base64 = image_to_base64(full_image)
+        img2_base64 = image_to_base64(cropped_image)
+
+        # GLM может обрабатывать несколько изображений в одном запросе
+        history = []
+        query = prompt or "Describe this 2 images."
+
+        # Создаем текстовое представление с двумя изображениями
+        response, history = self.model.chat(
+            self.tokenizer,
+            query=query,
+            history=history,
+            image=[img1_base64, img2_base64],  # Передаем список изображений
+            do_sample=True,
+            temperature=0.6,
+            top_p=0.75,
+            max_length=max_length,
+        )
+
+        return response.strip()
+
+
+class CaptionerPaliGemma(CaptionerBase):
+    """Генератор текстовых описаний с помощью Google PaliGemma 2 (10B)."""
+
+    def __init__(self, model_name="google/paligemma2-10b-vit-paligemma2-mix-448", device='cuda'):
+        super().__init__(device)
+        print("Loading Google PaliGemma 2 (10B) model:", model_name)
+
+        # Для PaliGemma2 используем PaliGemmaProcessor
+        self.processor = PaliGemmaProcessor.from_pretrained(model_name)
+        self.model = PaliGemmaForConditionalGeneration.from_pretrained(
+            model_name,
+            torch_dtype=torch.bfloat16,  # PaliGemma рекомендует bfloat16
+            device_map="auto"
+        )
+        self.model.to(device)
+
+        # PaliGemma использует специальные токены
+        self.bos_token = self.processor.tokenizer.bos_token
+        self.eos_token = self.processor.tokenizer.eos_token
+
+    def describe(self, image: Image.Image, prompt: str = None, max_length=128) -> str:
+        """
+        Генерирует описание для одного изображения.
+        """
+        # PaliGemma ожидает текст в определенном формате
+        text_prompt = prompt or "describe the image in detail"
+
+        # Подготавливаем входные данные
+        inputs = self.processor(
+            text=text_prompt,
+            images=image,
+            return_tensors="pt",
+            padding=True
+        ).to(self.device)
+
+        # Генерируем ответ
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_length,
+            do_sample=True,
+            temperature=0.6,
+            top_p=0.75,
+            top_k=50,
+            repetition_penalty=1.1,
+            eos_token_id=self.processor.tokenizer.eos_token_id,
+        )
+
+        # Декодируем ответ, пропуская промпт
+        generated_text = self.processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True
+        )[0]
+
+        # Убираем исходный промпт из ответа
+        if text_prompt in generated_text:
+            generated_text = generated_text.replace(text_prompt, "").strip()
+
+        return generated_text.strip()
+
+    def describe_two_images(self, full_image: Image.Image, cropped_image: Image.Image,
+                            prompt: str = None, max_length=256) -> str:
+        """
+        Генерирует описание для двух изображений с использованием PaliGemma 2.
+
+        Примечание: PaliGemma может обрабатывать несколько изображений в одном тензоре.
+        """
+        # Создаем объединенное изображение или обрабатываем отдельно
+        # Вариант 1: Объединяем изображения в одно
+        from PIL import Image
+        combined_width = full_image.width + cropped_image.width
+        combined_height = max(full_image.height, cropped_image.height)
+
+        combined_image = Image.new('RGB', (combined_width, combined_height))
+        combined_image.paste(full_image, (0, 0))
+        combined_image.paste(cropped_image, (full_image.width, 0))
+
+        # Вариант 2: Можно попробовать обработать как список изображений
+        # (если модель поддерживает)
+
+        text_prompt = prompt or "compare these two images and describe the differences"
+
+        # Подготавливаем входные данные
+        inputs = self.processor(
+            text=text_prompt,
+            images=combined_image,  # Используем объединенное изображение
+            return_tensors="pt",
+            padding=True
+        ).to(self.device)
+
+        # Генерируем ответ
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=max_length,
+            do_sample=True,
+            temperature=0.6,
+            top_p=0.75,
+            top_k=50,
+            repetition_penalty=1.1,
+            eos_token_id=self.processor.tokenizer.eos_token_id,
+        )
+
+        # Декодируем ответ
+        generated_text = self.processor.batch_decode(
+            generated_ids,
+            skip_special_tokens=True
+        )[0]
+
+        # Убираем исходный промпт из ответа
+        if text_prompt in generated_text:
+            generated_text = generated_text.replace(text_prompt, "").strip()
+
+        return generated_text.strip()
 
 
 class TextEmbedderBERT:

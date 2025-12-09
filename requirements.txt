@@ -10,3 +10,5 @@ ultralytics
 pymupdf
 accelerate
 opencv-python
+tiktoken
+plotly
