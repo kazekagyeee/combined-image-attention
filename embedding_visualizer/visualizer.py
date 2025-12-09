@@ -6,30 +6,28 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import plotly.express as px
 from typing import List, Dict, Any
 import glob
+import textwrap
 
 
-class Embedding3DVisualizer:
+class EnhancedEmbedding3DVisualizer:
     """
-    Класс для создания 3D визуализации текстовых эмбеддингов из JSON файлов.
+    Улучшенный класс для 3D визуализации текстовых эмбеддингов.
     """
 
     def __init__(self):
         self.data = []
         self.embeddings = []
         self.metadata = []
+        self.df = None
 
     def load_json_files(self, folder_path: str, file_pattern: str = "*.json"):
         """
         Загружает все JSON файлы из указанной папки.
-
-        Args:
-            folder_path: Путь к папке с JSON файлами
-            file_pattern: Шаблон для поиска файлов (по умолчанию *.json)
         """
-        # Находим все JSON файлы в папке
         json_files = glob.glob(os.path.join(folder_path, file_pattern))
 
         if not json_files:
@@ -43,7 +41,6 @@ class Embedding3DVisualizer:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     content = json.load(f)
 
-                    # Проверяем, является ли content списком объектов
                     if isinstance(content, list):
                         for item in content:
                             self._process_item(item, os.path.basename(file_path))
@@ -54,20 +51,19 @@ class Embedding3DVisualizer:
                 print(f"Ошибка при загрузке файла {file_path}: {e}")
 
     def _process_item(self, item: Dict[str, Any], source_file: str):
-        """
-        Обрабатывает один элемент JSON.
-        """
+        """Обрабатывает один элемент JSON."""
         if 'text_embedding' in item:
-            # Извлекаем эмбеддинг
             embedding = np.array(item['text_embedding'], dtype=np.float32)
-
-            # Сохраняем эмбеддинг
             self.embeddings.append(embedding)
 
-            # Сохраняем метаданные
+            # Создаем короткую версию caption для легенды
+            caption_short = item.get('caption', '')[:100] + "..." if len(item.get('caption', '')) > 100 else item.get(
+                'caption', '')
+
             metadata = {
                 'source_file': source_file,
                 'caption': item.get('caption', ''),
+                'caption_short': caption_short,
                 'prompt_used': item.get('prompt_used', ''),
                 'score': item.get('score', 0.0),
                 'area': item.get('area', 0.0),
@@ -79,17 +75,11 @@ class Embedding3DVisualizer:
             self.metadata.append(metadata)
 
     def prepare_embeddings(self) -> np.ndarray:
-        """
-        Подготавливает эмбеддинги для визуализации.
-
-        Returns:
-            Массив эмбеддингов
-        """
+        """Подготавливает эмбеддинги для визуализации."""
         if not self.embeddings:
             print("Нет загруженных эмбеддингов")
             return np.array([])
 
-        # Преобразуем в numpy массив
         embeddings_array = np.vstack(self.embeddings)
         print(f"Форма эмбеддингов: {embeddings_array.shape}")
         print(f"Количество объектов: {len(self.embeddings)}")
@@ -97,41 +87,31 @@ class Embedding3DVisualizer:
         return embeddings_array
 
     def reduce_to_3d(self, embeddings: np.ndarray, method: str = 'pca') -> np.ndarray:
-        """
-        Уменьшает размерность эмбеддингов до 3D.
-
-        Args:
-            embeddings: Массив эмбеддингов
-            method: Метод уменьшения размерности ('pca', 'tsne', 'umap')
-
-        Returns:
-            3D координаты
-        """
-        # Масштабируем данные
+        """Уменьшает размерность эмбеддингов до 3D."""
         scaler = StandardScaler()
         embeddings_scaled = scaler.fit_transform(embeddings)
 
         if method == 'pca':
-            # Используем PCA для уменьшения до 3D
             pca = PCA(n_components=3, random_state=42)
             coords_3d = pca.fit_transform(embeddings_scaled)
 
-            # Выводим информацию о объясненной дисперсии
             explained_variance = pca.explained_variance_ratio_
             print(f"Объясненная дисперсия PCA: {explained_variance}")
             print(f"Суммарная объясненная дисперсия: {sum(explained_variance):.4f}")
 
         elif method == 'tsne':
-            # Используем t-SNE для уменьшения до 3D
-            tsne = TSNE(n_components=3, random_state=42,
-                        perplexity=min(30, len(embeddings) - 1),
-                        max_iter=1000)
+            tsne = TSNE(
+                n_components=3,
+                random_state=42,
+                perplexity=min(30, len(embeddings) - 1),
+                max_iter=1000,
+                learning_rate='auto'
+            )
             coords_3d = tsne.fit_transform(embeddings_scaled)
 
         elif method == 'umap':
             try:
                 import umap
-                # Используем UMAP для уменьшения до 3D
                 reducer = umap.UMAP(n_components=3, random_state=42)
                 coords_3d = reducer.fit_transform(embeddings_scaled)
             except ImportError:
@@ -144,171 +124,362 @@ class Embedding3DVisualizer:
 
         return coords_3d
 
-    def create_3d_plot(self, coords_3d: np.ndarray,
-                       color_by: str = 'source_file',
-                       size_by: str = 'score',
-                       title: str = "3D визуализация текстовых эмбеддингов") -> go.Figure:
+    def create_enhanced_3d_plot(self, coords_3d: np.ndarray,
+                                color_by: str = 'source_file',
+                                size_by: str = 'score',
+                                title: str = "3D визуализация текстовых эмбеддингов") -> go.Figure:
         """
-        Создает интерактивный 3D график.
+        Создает улучшенный интерактивный 3D график.
 
-        Args:
-            coords_3d: 3D координаты точек
-            color_by: Поле для окрашивания точек
-            size_by: Поле для определения размера точек
-            title: Заголовок графика
-
-        Returns:
-            Plotly Figure объект
+        Особенности:
+        - Полный caption при наведении с переносами строк
+        - Улучшенная навигация (прокрутка для масштабирования)
+        - Плавное вращение
+        - Кнопки сброса и сохранения
         """
         if len(self.metadata) != len(coords_3d):
             raise ValueError("Количество метаданных не совпадает с количеством координат")
 
-        # Создаем DataFrame для удобства
+        # Создаем DataFrame с улучшенными данными
         df = pd.DataFrame({
             'x': coords_3d[:, 0],
             'y': coords_3d[:, 1],
             'z': coords_3d[:, 2],
+            'index': range(len(coords_3d))
         })
 
-        # Добавляем метаданные
+        # Добавляем метаданные с форматированием для отображения
         for key in self.metadata[0].keys():
             df[key] = [m[key] for m in self.metadata]
 
-        # Создаем интерактивную 3D визуализацию
-        fig = px.scatter_3d(
-            df,
-            x='x',
-            y='y',
-            z='z',
-            color=color_by,
-            size=size_by if size_by in df.columns else None,
-            hover_data=['caption', 'source_file', 'score', 'prompt_used'],
-            title=title,
-            opacity=0.8,
-            color_discrete_sequence=px.colors.qualitative.Set3
-        )
+        # Создаем форматированный текст для hover
+        def format_hover_text(row):
+            """Форматирует текст для отображения при наведении."""
+            lines = []
 
-        # Настраиваем макет
+            # Добавляем номер точки
+            lines.append(f"<b>Точка #{row['index'] + 1}</b>")
+            lines.append("─" * 30)
+
+            # Полный caption с переносами
+            caption_lines = textwrap.wrap(row['caption'], width=60)
+            if caption_lines:
+                lines.append("<b>Описание:</b>")
+                for line in caption_lines:
+                    lines.append(f"  {line}")
+                lines.append("")
+
+            # Метаданные
+            lines.append(f"<b>Файл:</b> {row['source_file']}")
+            lines.append(f"<b>Оценка:</b> {row['score']:.3f}")
+            lines.append(f"<b>Площадь:</b> {row['area']:.1f}")
+
+            # Обрезанный prompt для экономии места
+            if row['prompt_used']:
+                prompt_short = row['prompt_used'][:80] + "..." if len(row['prompt_used']) > 80 else row['prompt_used']
+                lines.append(f"<b>Промпт:</b> {prompt_short}")
+
+            return "<br>".join(lines)
+
+        df['hover_text'] = df.apply(format_hover_text, axis=1)
+
+        # Создаем фигуру с помощью plotly.graph_objects для большего контроля
+        fig = go.Figure()
+
+        # Определяем цвета для категорий
+        if color_by in df.columns:
+            if df[color_by].dtype == 'object':  # Категориальные данные
+                unique_values = df[color_by].unique()
+                colors = px.colors.qualitative.Set3
+
+                for i, value in enumerate(unique_values):
+                    mask = df[color_by] == value
+                    subset = df[mask]
+
+                    # Определяем размер точек
+                    sizes = subset[size_by] * 20 if size_by in df.columns else 8
+
+                    fig.add_trace(go.Scatter3d(
+                        x=subset['x'],
+                        y=subset['y'],
+                        z=subset['z'],
+                        mode='markers',
+                        name=str(value),
+                        marker=dict(
+                            size=sizes,
+                            color=colors[i % len(colors)],
+                            opacity=0.8,
+                            line=dict(width=1, color='white')
+                        ),
+                        text=subset['hover_text'],
+                        hoverinfo='text',
+                        hovertemplate='%{text}<extra></extra>',
+                        customdata=subset['index']
+                    ))
+            else:  # Числовые данные
+                fig.add_trace(go.Scatter3d(
+                    x=df['x'],
+                    y=df['y'],
+                    z=df['z'],
+                    mode='markers',
+                    marker=dict(
+                        size=df[size_by] * 20 if size_by in df.columns else 8,
+                        color=df[color_by],
+                        colorscale='Viridis',
+                        colorbar=dict(title=color_by),
+                        opacity=0.8,
+                        line=dict(width=1, color='white'),
+                        showscale=True
+                    ),
+                    text=df['hover_text'],
+                    hoverinfo='text',
+                    hovertemplate='%{text}<extra></extra>',
+                    customdata=df['index']
+                ))
+
+        # Настраиваем макет с улучшенной навигацией
         fig.update_layout(
+            title=dict(
+                text=title,
+                x=0.5,
+                font=dict(size=20)
+            ),
             scene=dict(
                 xaxis_title='Компонента 1',
                 yaxis_title='Компонента 2',
                 zaxis_title='Компонента 3',
                 camera=dict(
-                    eye=dict(x=1.5, y=1.5, z=1.5)
-                )
+                    eye=dict(x=1.5, y=1.5, z=1.5),
+                    up=dict(x=0, y=0, z=1),
+                    center=dict(x=0, y=0, z=0)
+                ),
+                aspectmode='data'
             ),
-            margin=dict(l=0, r=0, b=0, t=30),
-            showlegend=True
+            margin=dict(l=0, r=0, b=0, t=50),
+            showlegend=True,
+            legend=dict(
+                yanchor="top",
+                y=0.99,
+                xanchor="left",
+                x=1.02,
+                bgcolor='rgba(255, 255, 255, 0.8)',
+                bordercolor='black',
+                borderwidth=1
+            ),
+            # Включаем прокрутку для масштабирования
+            scene_camera=dict(
+                projection=dict(type='perspective')
+            ),
+            # Добавляем кнопки навигации
+            updatemenus=[
+                dict(
+                    type="buttons",
+                    direction="left",
+                    buttons=[
+                        dict(
+                            label="Сбросить вид",
+                            method="relayout",
+                            args=[{"scene.camera": dict(eye=dict(x=1.5, y=1.5, z=1.5),
+                                                        up=dict(x=0, y=0, z=1),
+                                                        center=dict(x=0, y=0, z=0))}]
+                        ),
+                        dict(
+                            label="Вид сверху",
+                            method="relayout",
+                            args=[{"scene.camera": dict(eye=dict(x=0, y=0, z=2.5),
+                                                        up=dict(x=0, y=1, z=0),
+                                                        center=dict(x=0, y=0, z=0))}]
+                        ),
+                        dict(
+                            label="Вид сбоку",
+                            method="relayout",
+                            args=[{"scene.camera": dict(eye=dict(x=2.5, y=0, z=0),
+                                                        up=dict(x=0, y=0, z=1),
+                                                        center=dict(x=0, y=0, z=0))}]
+                        )
+                    ],
+                    pad={"r": 10, "t": 10},
+                    showactive=False,
+                    x=0.1,
+                    xanchor="left",
+                    y=1.1,
+                    yanchor="top"
+                )
+            ]
         )
 
+        # Добавляем аннотации для подсказок
+        fig.add_annotation(
+            text="<b>Навигация:</b><br>• ЛКМ + движение = вращение<br>• ПКМ + движение = перемещение<br>• Прокрутка = масштаб",
+            xref="paper",
+            yref="paper",
+            x=0.02,
+            y=0.98,
+            showarrow=False,
+            bgcolor="rgba(255, 255, 255, 0.8)",
+            bordercolor="black",
+            borderwidth=1,
+            borderpad=4,
+            align="left"
+        )
+
+        self.df = df  # Сохраняем для возможного экспорта
         return fig
 
-    def create_animated_3d_plot(self, coords_3d: np.ndarray,
-                                animation_by: str = 'source_file') -> go.Figure:
+    def create_interactive_dashboard(self, coords_3d: np.ndarray):
         """
-        Создает анимированную 3D визуализацию.
-
-        Args:
-            coords_3d: 3D координаты точек
-            animation_by: Поле для анимации
-
-        Returns:
-            Plotly Figure объект
+        Создает интерактивную панель с несколькими видами.
         """
+        if len(self.metadata) != len(coords_3d):
+            raise ValueError("Количество метаданных не совпадает с количеством координат")
+
+        # Создаем DataFrame
         df = pd.DataFrame({
             'x': coords_3d[:, 0],
             'y': coords_3d[:, 1],
             'z': coords_3d[:, 2],
+            'index': range(len(coords_3d))
         })
 
-        # Добавляем метаданные
         for key in self.metadata[0].keys():
             df[key] = [m[key] for m in self.metadata]
 
-        fig = px.scatter_3d(
-            df,
-            x='x',
-            y='y',
-            z='z',
-            color=animation_by,
-            animation_frame=animation_by,
-            hover_data=['caption', 'score'],
-            title="Анимированная 3D визуализация эмбеддингов",
-            opacity=0.8
+        # Создаем подграфики: 3D вид и таблица с деталями
+        fig = make_subplots(
+            rows=2, cols=2,
+            specs=[[{'type': 'scatter3d', 'rowspan': 2}, {'type': 'scatter'}],
+                   [None, {'type': 'table'}]],
+            column_widths=[0.7, 0.3],
+            row_heights=[0.7, 0.3],
+            subplot_titles=('3D Визуализация эмбеддингов', '2D Проекция', 'Детали точки')
+        )
+
+        # 3D график
+        fig.add_trace(
+            go.Scatter3d(
+                x=df['x'],
+                y=df['y'],
+                z=df['z'],
+                mode='markers',
+                marker=dict(
+                    size=df['score'] * 15,
+                    color=df['score'],
+                    colorscale='Viridis',
+                    showscale=True,
+                    colorbar=dict(title="Score", x=1.05)
+                ),
+                text=df['caption_short'],
+                hoverinfo='text',
+                name='Эмбеддинги'
+            ),
+            row=1, col=1
+        )
+
+        # 2D проекция (xy)
+        fig.add_trace(
+            go.Scatter(
+                x=df['x'],
+                y=df['y'],
+                mode='markers',
+                marker=dict(
+                    size=8,
+                    color=df['score'],
+                    colorscale='Viridis',
+                    showscale=False
+                ),
+                text=df['caption_short'],
+                hoverinfo='text',
+                name='2D проекция'
+            ),
+            row=1, col=2
+        )
+
+        # Таблица с деталями (пустая, будет заполняться при клике)
+        fig.add_trace(
+            go.Table(
+                header=dict(values=['Параметр', 'Значение']),
+                cells=dict(values=[[''], ['']]),
+                name='Детали'
+            ),
+            row=2, col=2
+        )
+
+        # Настраиваем макет
+        fig.update_layout(
+            title="Интерактивная панель визуализации эмбеддингов",
+            height=800,
+            showlegend=False,
+            hovermode='closest'
         )
 
         return fig
 
-    def save_plot(self, fig: go.Figure, filename: str = "embeddings_3d_plot.html"):
+    def export_to_html(self, fig: go.Figure, filename: str = "embeddings_3d_enhanced.html"):
         """
-        Сохраняет график в HTML файл.
+        Экспортирует график в HTML с дополнительными функциями.
+        """
+        # Добавляем кастомный CSS для лучшего отображения
+        config = {
+            'scrollZoom': True,  # Включаем прокрутку для масштабирования
+            'displayModeBar': True,
+            'modeBarButtonsToAdd': [
+                'drawline',
+                'drawopenpath',
+                'drawclosedpath',
+                'drawcircle',
+                'drawrect',
+                'eraseshape'
+            ],
+            'displaylogo': False
+        }
 
-        Args:
-            fig: Plotly Figure объект
-            filename: Имя файла для сохранения
-        """
-        fig.write_html(filename)
+        # Сохраняем с дополнительными опциями
+        fig.write_html(
+            filename,
+            config=config,
+            include_plotlyjs='cdn',
+            full_html=True,
+            auto_open=True
+        )
         print(f"График сохранен как: {filename}")
 
-    def create_static_matplotlib_plot(self, coords_3d: np.ndarray):
-        """
-        Создает статическую 3D визуализацию с помощью matplotlib.
-        Полезно для сохранения в PNG/PDF.
-        """
-        try:
-            import matplotlib.pyplot as plt
-            from mpl_toolkits.mplot3d import Axes3D
+    def export_selected_data(self, indices: List[int], filename: str = "selected_points.json"):
+        """Экспортирует выбранные точки в JSON."""
+        if self.df is None or len(indices) == 0:
+            print("Нет данных для экспорта")
+            return
 
-            fig = plt.figure(figsize=(12, 10))
-            ax = fig.add_subplot(111, projection='3d')
+        selected_data = []
+        for idx in indices:
+            if idx < len(self.df):
+                row = self.df.iloc[idx]
+                point_data = {
+                    'index': int(row['index']),
+                    'coordinates': {
+                        'x': float(row['x']),
+                        'y': float(row['y']),
+                        'z': float(row['z'])
+                    },
+                    'caption': row['caption'],
+                    'source_file': row['source_file'],
+                    'score': float(row['score']),
+                    'prompt_used': row['prompt_used']
+                }
+                selected_data.append(point_data)
 
-            # Получаем уникальные источники для цветов
-            sources = list(set(m['source_file'] for m in self.metadata))
-            colors = plt.cm.tab20(np.linspace(0, 1, len(sources)))
+        with open(filename, 'w', encoding='utf-8') as f:
+            json.dump(selected_data, f, indent=2, ensure_ascii=False)
 
-            # Создаем словарь цветов
-            color_dict = {source: colors[i] for i, source in enumerate(sources)}
-
-            # Рисуем точки
-            for i, (coord, metadata) in enumerate(zip(coords_3d, self.metadata)):
-                ax.scatter(
-                    coord[0], coord[1], coord[2],
-                    c=[color_dict[metadata['source_file']]],
-                    s=metadata.get('score', 1) * 50,  # Размер зависит от score
-                    alpha=0.7,
-                    edgecolors='w',
-                    linewidth=0.5
-                )
-
-            ax.set_xlabel('Компонента 1')
-            ax.set_ylabel('Компонента 2')
-            ax.set_zlabel('Компонента 3')
-            ax.set_title('3D визуализация текстовых эмбеддингов')
-
-            # Добавляем легенду
-            from matplotlib.patches import Patch
-            legend_elements = [Patch(facecolor=color_dict[src], label=src)
-                               for src in sources]
-            ax.legend(handles=legend_elements, bbox_to_anchor=(1.05, 1), loc='upper left')
-
-            plt.tight_layout()
-            plt.savefig('embeddings_3d_static.png', dpi=300, bbox_inches='tight')
-            plt.show()
-
-        except ImportError:
-            print("Matplotlib не установлен. Используйте plotly для визуализации.")
+        print(f"Экспортировано {len(selected_data)} точек в {filename}")
 
 
-def main():
+def enhanced_main():
     """
-    Основная функция для демонстрации работы визуализатора.
+    Улучшенная основная функция для демонстрации.
     """
-    # Создаем визуализатор
-    visualizer = Embedding3DVisualizer()
+    visualizer = EnhancedEmbedding3DVisualizer()
 
     # Загружаем все JSON файлы из папки
-    # Замените путь на ваш реальный путь к папке
     folder_path = "./embeddings"
     visualizer.load_json_files(folder_path)
 
@@ -319,62 +490,78 @@ def main():
         print("Нет данных для визуализации")
         return
 
-    # Уменьшаем размерность до 3D
+    # Уменьшаем размерность до 3D с помощью PCA (быстрее и стабильнее для начала)
     print("\nУменьшение размерности с помощью PCA...")
     coords_3d_pca = visualizer.reduce_to_3d(embeddings, method='pca')
 
-    print("\nУменьшение размерности с помощью t-SNE...")
-    coords_3d_tsne = visualizer.reduce_to_3d(embeddings, method='tsne')
+    # Создаем улучшенную визуализацию
+    print("\nСоздание улучшенной 3D визуализации...")
 
-    # Создаем визуализацию с разными параметрами
-    print("\nСоздание 3D визуализаций...")
-
-    # Вариант 1: Цвет по исходному файлу, размер по score
-    fig1 = visualizer.create_3d_plot(
+    # Вариант 1: Основной улучшенный график
+    fig1 = visualizer.create_enhanced_3d_plot(
         coords_3d_pca,
         color_by='source_file',
         size_by='score',
-        title="3D визуализация эмбеддингов (PCA) - цвет по файлу"
+        title="Улучшенная 3D визуализация текстовых эмбеддингов"
     )
-    visualizer.save_plot(fig1, "embeddings_by_source.html")
 
-    # Вариант 2: Цвет по score (дискретизированный)
-    # Добавляем категориальную колонку для score
-    for metadata in visualizer.metadata:
-        score = metadata['score']
-        if score > 0.8:
-            metadata['score_category'] = 'Высокий'
-        elif score > 0.5:
-            metadata['score_category'] = 'Средний'
-        else:
-            metadata['score_category'] = 'Низкий'
+    # Экспортируем с улучшенными функциями
+    visualizer.export_to_html(fig1, "embeddings_3d_enhanced.html")
 
-    fig2 = visualizer.create_3d_plot(
-        coords_3d_tsne,
-        color_by='score_category',
-        size_by='area',
-        title="3D визуализация эмбеддингов (t-SNE) - цвет по оценке"
-    )
-    visualizer.save_plot(fig2, "embeddings_by_score.html")
+    print("\n=== Инструкция по использованию ===")
+    print("1. Откройте файл embeddings_3d_enhanced.html в браузере")
+    print("2. Наведите курсор на точку - увидите полное описание")
+    print("3. Используйте мышь для навигации:")
+    print("   - ЛКМ + движение: вращение")
+    print("   - ПКМ + движение: перемещение")
+    print("   - Прокрутка: масштабирование")
+    print("4. Используйте кнопки сверху для смены вида")
 
-    # Вариант 3: Статическая визуализация с matplotlib
-    print("\nСоздание статической визуализации...")
-    visualizer.create_static_matplotlib_plot(coords_3d_pca)
+    # Дополнительно: создаем дашборд с несколькими видами
+    print("\nСоздание интерактивной панели...")
+    dashboard = visualizer.create_interactive_dashboard(coords_3d_pca)
+    visualizer.export_to_html(dashboard, "embeddings_dashboard.html")
 
-    # Показать информацию о данных
-    print("\n=== Сводка данных ===")
+    # Показываем статистику
+    print("\n=== Статистика данных ===")
     print(f"Всего объектов: {len(visualizer.embeddings)}")
     print(f"Размерность эмбеддингов: {embeddings.shape[1]}")
-    print(f"Уникальные файлы: {len(set(m['source_file'] for m in visualizer.metadata))}")
 
-    # Выводим примеры данных для проверки
-    print("\nПримеры captions:")
-    for i, metadata in enumerate(visualizer.metadata[:3]):
-        caption_preview = metadata['caption'][:100] + "..." if len(metadata['caption']) > 100 else metadata['caption']
-        print(f"{i + 1}. {caption_preview}")
-        print(f"   Файл: {metadata['source_file']}, Score: {metadata['score']}")
-        print()
+    if visualizer.metadata:
+        unique_files = set(m['source_file'] for m in visualizer.metadata)
+        print(f"Уникальные файлы: {len(unique_files)}")
+        print(f"Средняя длина caption: {np.mean([len(m['caption']) for m in visualizer.metadata]):.0f} символов")
+        print(
+            f"Диапазон оценок: {min([m['score'] for m in visualizer.metadata]):.2f} - {max([m['score'] for m in visualizer.metadata]):.2f}")
+
+
+def quick_visualize(folder_path: str = "./embeddings"):
+    """
+    Быстрая визуализация с минимумом настроек.
+    """
+    visualizer = EnhancedEmbedding3DVisualizer()
+    visualizer.load_json_files(folder_path)
+
+    embeddings = visualizer.prepare_embeddings()
+    if embeddings.size == 0:
+        return None
+
+    coords_3d = visualizer.reduce_to_3d(embeddings, method='pca')
+
+    fig = visualizer.create_enhanced_3d_plot(
+        coords_3d,
+        color_by='score',
+        size_by='area',
+        title="Быстрая 3D визуализация эмбеддингов"
+    )
+
+    visualizer.export_to_html(fig, "quick_visualization.html")
+    return fig
 
 
 if __name__ == "__main__":
-    main()
+    # Запускаем улучшенную визуализацию
+    enhanced_main()
+
+    # Для быстрого тестирования можно использовать:
+    # quick_visualize("./embeddings")
