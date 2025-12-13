@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class PipelineConfig:
     """Конфигурация для VLM pipeline"""
     detector_model: str = "uied_cv" # yolov8/uied_cv
-    captioner_model: str = "glm" # qwen/blip/glm/paligemma
+    captioner_model: str = "paligemma" # qwen/blip/glm/paligemma
     input_dir: str = "./images"
     out_dir: str = "./out"
     # Prompt for two images needs to be like: "The first image is the full picture, the second is a cropped part of it. Describe what you see in the cropped part and its relation to the full image."
