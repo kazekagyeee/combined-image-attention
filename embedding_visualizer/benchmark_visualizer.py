@@ -11,7 +11,6 @@ from config import BenchmarkConfig
 warnings.filterwarnings('ignore')
 
 
-
 class EmbeddingBenchmark:
     def __init__(self, config=BenchmarkConfig):
         self.embeddings = {}
@@ -151,13 +150,51 @@ class EmbeddingBenchmark:
                     'label': self.labels[i],
                     'source': self.sources[i],
                     'cosine_distance': cos_dist,
+                    'cosine_similarity': 1 - cos_dist,  # Добавляем схожесть
                     'euclidean_distance': euc_dist
                 })
 
         return distances
 
+    def interpret_cosine_similarity_for_rag(self, mean_similarity):
+        """Интерпретация средней косинусной схожести для RAG"""
+        if mean_similarity > 0.8:
+            interpretation = "Очень высокая схожесть"
+            impact = "Чанки очень близки к родителю. Это хорошо для релевантности, но возможна избыточность информации."
+            recommendation = "Проверить на повторяемость/избыточность в чанках. Возможно, нужно увеличить разнообразие."
+            rag_effect = "RAG будет получать высокорелевантный контекст, но может страдать от недостатка разнообразной информации."
+            color = "green"
+        elif mean_similarity >= 0.6:
+            interpretation = "Нормальная схожесть"
+            impact = "Чанки релевантны родителю с хорошим балансом разнообразия."
+            recommendation = "Оптимальный диапазон для большинства задач RAG."
+            rag_effect = "RAG будет получать релевантный и достаточно разнообразный контекст для генерации качественных ответов."
+            color = "blue"
+        elif mean_similarity >= 0.4:
+            interpretation = "Низкая схожесть"
+            impact = "Чанки умеренно далеки от родителя. Возможны проблемы с релевантностью."
+            recommendation = "Рассмотреть пересмотр chunking-стратегии или проверку модели эмбеддингов."
+            rag_effect = "RAG может получать нерелевантный контекст, что ухудшит точность и фактологичность ответов."
+            color = "orange"
+        else:
+            interpretation = "Очень низкая схожесть"
+            impact = "Чанки семантически далеки от родителя. Вероятен шум и низкая релевантность."
+            recommendation = "Требуется пересмотр chunking-стратегии, проверка качества данных и модели эмбеддингов."
+            rag_effect = "RAG будет страдать от низкокачественного контекста, что приведет к некорректным или галлюцинированным ответам."
+            color = "red"
+
+        return {
+            'interpretation': interpretation,
+            'impact': impact,
+            'recommendation': recommendation,
+            'rag_effect': rag_effect,
+            'color': color,
+            'mean_similarity': mean_similarity,
+            'mean_distance': 1 - mean_similarity
+        }
+
     def calculate_metrics(self, distances):
-        """Вычисление всех метрик"""
+        """Вычисление всех метрик с интерпретацией для RAG"""
         # Разделяем расстояния по источникам
         test_distances = [d for d in distances if d['source'] == 'test']
         base_distances = [d for d in distances if d['source'] == 'base']
@@ -177,31 +214,54 @@ class EmbeddingBenchmark:
             'threshold_source': threshold_source,
             'test_metrics': {},
             'base_metrics': {},
-            'comparison': {}
+            'comparison': {},
+            'rag_interpretation': {}  # Новый раздел для интерпретации RAG
         }
 
         # Метрики для исследуемых эмбеддингов
         if test_distances:
             test_cosine = [d['cosine_distance'] for d in test_distances]
+            test_similarities = [d['cosine_similarity'] for d in test_distances]
+
+            # Интерпретация для RAG
+            mean_test_similarity = np.mean(test_similarities)
+            rag_interpretation_test = self.interpret_cosine_similarity_for_rag(mean_test_similarity)
+
             metrics['test_metrics'] = {
                 'binary_detection_rate': sum(1 for d in test_cosine if d > threshold_T) / len(test_cosine) * 100,
                 'mean_cosine_distance': np.mean(test_cosine),
+                'mean_cosine_similarity': mean_test_similarity,
                 'std_cosine_distance': np.std(test_cosine),
+                'std_cosine_similarity': np.std(test_similarities),
                 'min_cosine_distance': np.min(test_cosine),
                 'max_cosine_distance': np.max(test_cosine),
-                'count': len(test_distances)
+                'min_cosine_similarity': np.min(test_similarities),
+                'max_cosine_similarity': np.max(test_similarities),
+                'count': len(test_distances),
+                'rag_interpretation': rag_interpretation_test
             }
 
         # Метрики для базовых эмбеддингов
         if base_distances:
             base_cosine = [d['cosine_distance'] for d in base_distances]
+            base_similarities = [d['cosine_similarity'] for d in base_distances]
+
+            # Интерпретация для RAG
+            mean_base_similarity = np.mean(base_similarities)
+            rag_interpretation_base = self.interpret_cosine_similarity_for_rag(mean_base_similarity)
+
             metrics['base_metrics'] = {
                 'binary_detection_rate': sum(1 for d in base_cosine if d > threshold_T) / len(base_cosine) * 100,
                 'mean_cosine_distance': np.mean(base_cosine),
+                'mean_cosine_similarity': mean_base_similarity,
                 'std_cosine_distance': np.std(base_cosine),
+                'std_cosine_similarity': np.std(base_similarities),
                 'min_cosine_distance': np.min(base_cosine),
                 'max_cosine_distance': np.max(base_cosine),
-                'count': len(base_distances)
+                'min_cosine_similarity': np.min(base_similarities),
+                'max_cosine_similarity': np.max(base_similarities),
+                'count': len(base_distances),
+                'rag_interpretation': rag_interpretation_base
             }
 
         # Комплексные сравнительные метрики
@@ -217,40 +277,30 @@ class EmbeddingBenchmark:
             base_std = metrics['base_metrics']['std_cosine_distance']
 
             # Вычисляем относительные улучшения/ухудшения
-            # Для Binary Detection Rate: больше = лучше
             bdr_improvement = test_bdr - base_bdr
-
-            # Для среднего расстояния: БОЛЬШЕ = ЛУЧШЕ (элементы лучше отделяются)
             mean_improvement = test_mean - base_mean
 
-            # Для стандартного отклонения: теперь БОЛЬШЕ тоже = ЛУЧШЕ (до определенного предела)
-            # Но с оговоркой - слишком высокое std может быть плохо
-
             # Нормализуем стандартное отклонение с учетом оптимального диапазона
-            # Идеальный std: 0.1-0.3 (умеренная дифференциация)
             optimal_std_min = 0.1
             optimal_std_max = 0.3
 
             def score_std(std_value):
                 if std_value < optimal_std_min:
-                    # Слишком низкое - плохо (нет дифференциации)
-                    return std_value / optimal_std_min  # < 1.0
+                    return std_value / optimal_std_min
                 elif std_value <= optimal_std_max:
-                    # В оптимальном диапазоне
                     return 1.0
                 else:
-                    # Слишком высокое - плохо (чрезмерная вариативность)
-                    return optimal_std_max / std_value  # < 1.0
+                    return optimal_std_max / std_value
 
             test_std_score = score_std(test_std)
             base_std_score = score_std(base_std)
             std_improvement = test_std_score - base_std_score
 
-            # Взвешенная оценка с новой семантикой
+            # Взвешенная оценка
             weights = {
-                'bdr': 0.4,  # Binary Detection Rate - важная
-                'mean': 0.4,  # Среднее расстояние - столь же важно
-                'std': 0.2  # Стандартное отклонение - важно с оговорками
+                'bdr': 0.4,
+                'mean': 0.4,
+                'std': 0.2
             }
 
             # Нормализуем улучшения
@@ -270,40 +320,27 @@ class EmbeddingBenchmark:
             )
 
             metrics['comparison'] = {
-                # Базовые сравнения
                 'test_better_by_bdr': test_bdr >= base_bdr,
                 'test_better_by_mean': test_mean > base_mean,
-
-                # Для std: теперь сложнее - нужно учитывать оптимальный диапазон
                 'test_std_in_optimal_range': optimal_std_min <= test_std <= optimal_std_max,
                 'base_std_in_optimal_range': optimal_std_min <= base_std <= optimal_std_max,
                 'test_better_by_std_score': test_std_score > base_std_score,
                 'test_better_by_std': test_std_score > base_std_score,
-
-                # Значения
                 'bdr_difference': bdr_improvement,
                 'mean_difference': mean_improvement,
                 'std_difference': std_improvement,
                 'test_std_score': test_std_score,
                 'base_std_score': base_std_score,
-
-                # Относительные улучшения (%)
                 'bdr_improvement_percent': (bdr_improvement / base_bdr * 100) if base_bdr != 0 else 0,
                 'mean_improvement_percent': (mean_improvement / base_mean * 100) if base_mean != 0 else 0,
                 'std_improvement_percent': (std_improvement / base_std_score * 100) if base_std_score != 0 else 0,
-
-                # Композитная оценка
                 'composite_score': composite_score,
                 'test_better_by_composite': composite_score > 0,
-
-                # Правило большинства (адаптированное)
                 'test_better_by_majority': (
-                                                   (test_bdr > base_bdr) +
-                                                   (test_mean > base_mean) +
-                                                   (test_std_score > base_std_score)
+                                                   int(test_bdr >= base_bdr) +
+                                                   int(test_mean > base_mean) +
+                                                   int(test_std_score > base_std_score)
                                            ) >= 2,
-
-                # Все значения для отчета
                 'test_values': {
                     'bdr': test_bdr,
                     'mean': test_mean,
@@ -316,8 +353,6 @@ class EmbeddingBenchmark:
                     'std': base_std,
                     'std_score': base_std_score
                 },
-
-                # Интерпретации
                 'interpretations': {
                     'mean': {
                         'test': 'Больше = лучше отделение' if test_mean > base_mean else 'Меньше = хуже отделение',
@@ -402,6 +437,7 @@ class EmbeddingBenchmark:
                     hover_texts.append(
                         f"{self.labels[i]}<br>"
                         f"Косинусное расстояние: {dist_info['cosine_distance']:.4f}<br>"
+                        f"Косинусная схожесть: {dist_info['cosine_similarity']:.4f}<br>"
                         f"Евклидово расстояние: {dist_info['euclidean_distance']:.4f}"
                     )
                 else:
@@ -415,6 +451,7 @@ class EmbeddingBenchmark:
                     hover_texts.append(
                         f"{self.labels[i]}<br>"
                         f"Косинусное расстояние: {dist_info['cosine_distance']:.4f}<br>"
+                        f"Косинусная схожесть: {dist_info['cosine_similarity']:.4f}<br>"
                         f"Евклидово расстояние: {dist_info['euclidean_distance']:.4f}"
                     )
                 else:
@@ -500,7 +537,7 @@ class EmbeddingBenchmark:
         cumulative_variance = pca_info['cumulative_variance']
 
         fig = make_subplots(rows=1, cols=2, subplot_titles=(
-        'Объясненная дисперсия по компонентам', 'Накопленная объясненная дисперсия'))
+            'Объясненная дисперсия по компонентам', 'Накопленная объясненная дисперсия'))
 
         # Первый график: объясненная дисперсия
         fig.add_trace(
@@ -583,9 +620,42 @@ class EmbeddingBenchmark:
             annotation_position="top right"
         )
 
+        # Добавляем вертикальные линии для интерпретации RAG
+        fig.add_vrect(
+            x0=0, x1=0.2,
+            fillcolor="green", opacity=0.1,
+            layer="below", line_width=0,
+            annotation_text="Высокая схожесть (>0.8)",
+            annotation_position="top left"
+        )
+
+        fig.add_vrect(
+            x0=0.2, x1=0.4,
+            fillcolor="blue", opacity=0.1,
+            layer="below", line_width=0,
+            annotation_text="Нормальная схожесть (0.6-0.8)",
+            annotation_position="top left"
+        )
+
+        fig.add_vrect(
+            x0=0.4, x1=0.6,
+            fillcolor="orange", opacity=0.1,
+            layer="below", line_width=0,
+            annotation_text="Низкая схожесть (0.4-0.6)",
+            annotation_position="top left"
+        )
+
+        fig.add_vrect(
+            x0=0.6, x1=1.0,
+            fillcolor="red", opacity=0.1,
+            layer="below", line_width=0,
+            annotation_text="Очень низкая схожесть (<0.4)",
+            annotation_position="top left"
+        )
+
         fig.update_layout(
             title='Распределение Косинусных Расстояний до Родительского Эмбеддинга',
-            xaxis_title='Косинусное расстояние',
+            xaxis_title='Косинусное расстояние (1 - similarity)',
             yaxis_title='Частота',
             barmode='overlay',
             height=500,
@@ -596,6 +666,138 @@ class EmbeddingBenchmark:
         print("Распределение расстояний сохранено в distance_distribution.html")
 
         return fig
+
+    def create_rag_interpretation_section(self, metrics):
+        """Создание раздела с интерпретацией для RAG"""
+        html_content = '''
+        <div class="rag-interpretation">
+            <h2>Интерпретация для RAG (Retrieval-Augmented Generation)</h2>
+
+            <div class="rag-explanation">
+                <h3>Что означает средняя косинусная схожесть с эмбеддингом-родителем?</h3>
+                <p>Эмбеддинг-родитель представляет собой векторное представление "родительского" текста 
+                (например, весь документ, заголовок или агрегированный центр для набора чанков).</p>
+                <p>Средняя косинусная схожесть между эмбеддингами чанков и этим родительским вектором показывает, 
+                насколько семантически близки чанки к "смыслу" родителя.</p>
+            </div>
+
+            <div class="rag-impact">
+                <h3>Как это влияет на качество RAG?</h3>
+                <ul>
+                    <li><strong>Высокая схожесть (> 0.8)</strong>: Чанки направлены в ту же семантическую сторону, что и родитель. 
+                    Это обеспечивает релевантный контекст для RAG, но возможна избыточность информации.</li>
+                    <li><strong>Нормальная схожесть (0.6-0.8)</strong>: Оптимальный баланс релевантности и разнообразия. 
+                    RAG получает релевантный и достаточно разнообразный контекст.</li>
+                    <li><strong>Низкая схожесть (< 0.6)</strong>: Чанки семантически далеки от родителя. 
+                    Это может привести к нерелевантному контексту и ухудшению качества ответов RAG.</li>
+                </ul>
+            </div>
+
+            <div class="rag-thresholds">
+                <h3>Эмпирические пороги для диагностики RAG</h3>
+                <table class="rag-table">
+                    <tr>
+                        <th>Схожесть</th>
+                        <th>Расстояние</th>
+                        <th>Интерпретация</th>
+                        <th>Рекомендация для RAG</th>
+                    </tr>
+                    <tr style="background-color: #e6ffe6;">
+                        <td>> 0.8</td>
+                        <td>< 0.2</td>
+                        <td>Очень высокая схожесть</td>
+                        <td>Проверить на избыточность/повторы в чанках</td>
+                    </tr>
+                    <tr style="background-color: #e6f3ff;">
+                        <td>0.6 - 0.8</td>
+                        <td>0.2 - 0.4</td>
+                        <td>Нормальный диапазон</td>
+                        <td>Оптимально для большинства задач RAG</td>
+                    </tr>
+                    <tr style="background-color: #fff4e6;">
+                        <td>0.4 - 0.6</td>
+                        <td>0.4 - 0.6</td>
+                        <td>Низкая схожесть</td>
+                        <td>Рассмотреть пересмотр chunking-стратегии</td>
+                    </tr>
+                    <tr style="background-color: #ffe6e6;">
+                        <td>< 0.4</td>
+                        <td>> 0.6</td>
+                        <td>Очень низкая схожесть</td>
+                        <td>Требуется проверка chunking и модели эмбеддингов</td>
+                    </tr>
+                </table>
+            </div>
+        '''
+
+        # Добавляем интерпретацию для исследуемых эмбеддингов
+        if metrics.get('test_metrics') and 'rag_interpretation' in metrics['test_metrics']:
+            rag_test = metrics['test_metrics']['rag_interpretation']
+            html_content += f'''
+            <div class="rag-results" style="border: 2px solid {rag_test['color']}; padding: 15px; margin: 20px 0; border-radius: 10px;">
+                <h3>Интерпретация для исследуемых эмбеддингов</h3>
+                <div class="metric-item">
+                    Средняя косинусная схожесть: <span class="metric-value">{rag_test['mean_similarity']:.4f}</span>
+                </div>
+                <div class="metric-item">
+                    Среднее косинусное расстояние: <span class="metric-value">{rag_test['mean_distance']:.4f}</span>
+                </div>
+                <div class="metric-item">
+                    <strong>Интерпретация:</strong> <span style="color: {rag_test['color']};">{rag_test['interpretation']}</span>
+                </div>
+                <div class="metric-item">
+                    <strong>Влияние на RAG:</strong> {rag_test['rag_effect']}
+                </div>
+                <div class="metric-item">
+                    <strong>Рекомендация:</strong> {rag_test['recommendation']}
+                </div>
+            </div>
+            '''
+
+        # Добавляем интерпретацию для базовых эмбеддингов
+        if metrics.get('base_metrics') and 'rag_interpretation' in metrics['base_metrics']:
+            rag_base = metrics['base_metrics']['rag_interpretation']
+            html_content += f'''
+            <div class="rag-results" style="border: 2px solid {rag_base['color']}; padding: 15px; margin: 20px 0; border-radius: 10px;">
+                <h3>Интерпретация для базовых эмбеддингов</h3>
+                <div class="metric-item">
+                    Средняя косинусная схожесть: <span class="metric-value">{rag_base['mean_similarity']:.4f}</span>
+                </div>
+                <div class="metric-item">
+                    Среднее косинусное расстояние: <span class="metric-value">{rag_base['mean_distance']:.4f}</span>
+                </div>
+                <div class="metric-item">
+                    <strong>Интерпретация:</strong> <span style="color: {rag_base['color']};">{rag_base['interpretation']}</span>
+                </div>
+                <div class="metric-item">
+                    <strong>Влияние на RAG:</strong> {rag_base['rag_effect']}
+                </div>
+                <div class="metric-item">
+                    <strong>Рекомендация:</strong> {rag_base['recommendation']}
+                </div>
+            </div>
+            '''
+
+        html_content += '''
+            <div class="rag-references">
+                <h3>Источники и пояснения</h3>
+                <ul>
+                    <li><strong>Высокая схожесть (>0.8)</strong>: Чанки семантически очень близки к родителю. 
+                    Это хорошо для релевантности, но может означать избыточность информации (источник: milvus.io)</li>
+                    <li><strong>Низкая схожесть (<0.6)</strong>: Чанки далеки от родителя, возможен шум и низкая релевантность. 
+                    Это ухудшает качество retrieval в RAG (источник: arXiv)</li>
+                    <li><strong>Связь с faithfulness ответов</strong>: Низкая схожесть может уменьшать точность и фактологичность 
+                    ответов RAG, так как модель получает нерелевантный контекст (источник: escape-force.com)</li>
+                    <li><strong>Вариативность внутри документа</strong>: Высокая вариативность (std) эмбеддингов указывает на 
+                    разнонаправленные темы в документе, что может требовать более тонкого chunking (источник: arXiv)</li>
+                </ul>
+                <p><em>Примечание: Пороги являются эмпирическими рекомендациями и могут зависеть от конкретной модели 
+                эмбеддингов и корпуса данных.</em></p>
+            </div>
+        </div>
+        '''
+
+        return html_content
 
     def create_metrics_report(self, metrics, distances):
         """Создание HTML отчета с метриками"""
@@ -633,13 +835,34 @@ class EmbeddingBenchmark:
             .distance-table th, .distance-table td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
             .distance-table th {{ background-color: #4CAF50; color: white; }}
             .parent-row {{ background-color: #ffe6e6; }}
+            .rag-interpretation {{ background: #f9f9f9; padding: 20px; border-radius: 10px; margin: 20px 0; border-left: 5px solid #4CAF50; }}
+            .rag-explanation {{ margin: 15px 0; }}
+            .rag-impact {{ margin: 15px 0; }}
+            .rag-thresholds {{ margin: 15px 0; }}
+            .rag-table {{ width: 100%; border-collapse: collapse; margin: 15px 0; }}
+            .rag-table th, .rag-table td {{ border: 1px solid #ddd; padding: 10px; text-align: left; }}
+            .rag-table th {{ background-color: #4CAF50; color: white; }}
+            .rag-results {{ margin: 20px 0; }}
+            .rag-references {{ margin-top: 20px; padding: 15px; background: #f0f8ff; border-radius: 8px; }}
+            .similarity-badge {{
+                display: inline-block;
+                padding: 3px 8px;
+                border-radius: 4px;
+                font-size: 0.9em;
+                font-weight: bold;
+                margin-left: 10px;
+            }}
+            .similarity-high {{ background: #d4edda; color: #155724; }}
+            .similarity-good {{ background: #d1ecf1; color: #0c5460; }}
+            .similarity-low {{ background: #fff3cd; color: #856404; }}
+            .similarity-poor {{ background: #f8d7da; color: #721c24; }}
         </style>
     </head>
     <body>
         <div class="container">
             <div class="header">
                 <h1>Бенчмарк Эмбеддингов - Анализ Качества</h1>
-                <p>Сравнение исследуемых и базовых эмбеддингов</p>
+                <p>Сравнение исследуемых и базовых эмбеддингов с интерпретацией для RAG</p>
             </div>
 
             <div class="threshold-info">
@@ -663,6 +886,9 @@ class EmbeddingBenchmark:
     '''
 
         if metrics['test_metrics']:
+            test_mean_sim = metrics['test_metrics']['mean_cosine_similarity']
+            test_sim_badge = 'similarity-high' if test_mean_sim > 0.8 else 'similarity-good' if test_mean_sim >= 0.6 else 'similarity-low' if test_mean_sim >= 0.4 else 'similarity-poor'
+
             html_content += '''
                 <h3>Исследуемые эмбеддинги ({test_count} шт.)</h3>
                 <div class="metric-item">
@@ -672,21 +898,31 @@ class EmbeddingBenchmark:
                     Среднее косинусное расстояние: <span class="metric-value">{test_mean:.4f}</span>
                 </div>
                 <div class="metric-item">
+                    Средняя косинусная схожесть: <span class="metric-value">{test_sim:.4f}</span>
+                    <span class="similarity-badge {sim_badge}">{sim_text}</span>
+                </div>
+                <div class="metric-item">
                     Стандартное отклонение: <span class="metric-value">{test_std:.4f}</span>
                 </div>
                 <div class="metric-item">
-                    Диапазон: [{test_min:.4f}, {test_max:.4f}]
+                    Диапазон схожести: [{test_min_sim:.4f}, {test_max_sim:.4f}]
                 </div>
     '''.format(
                 test_count=metrics['test_metrics']['count'],
                 test_bdr=metrics['test_metrics']['binary_detection_rate'],
                 test_mean=metrics['test_metrics']['mean_cosine_distance'],
+                test_sim=test_mean_sim,
+                sim_badge=test_sim_badge,
+                sim_text='Высокая' if test_mean_sim > 0.8 else 'Нормальная' if test_mean_sim >= 0.6 else 'Низкая' if test_mean_sim >= 0.4 else 'Очень низкая',
                 test_std=metrics['test_metrics']['std_cosine_distance'],
-                test_min=metrics['test_metrics']['min_cosine_distance'],
-                test_max=metrics['test_metrics']['max_cosine_distance']
+                test_min_sim=metrics['test_metrics']['min_cosine_similarity'],
+                test_max_sim=metrics['test_metrics']['max_cosine_similarity']
             )
 
         if metrics['base_metrics']:
+            base_mean_sim = metrics['base_metrics']['mean_cosine_similarity']
+            base_sim_badge = 'similarity-high' if base_mean_sim > 0.8 else 'similarity-good' if base_mean_sim >= 0.6 else 'similarity-low' if base_mean_sim >= 0.4 else 'similarity-poor'
+
             html_content += '''
                 <h3>Базовые эмбеддинги ({base_count} шт.)</h3>
                 <div class="metric-item">
@@ -696,18 +932,25 @@ class EmbeddingBenchmark:
                     Среднее косинусное расстояние: <span class="metric-value">{base_mean:.4f}</span>
                 </div>
                 <div class="metric-item">
+                    Средняя косинусная схожесть: <span class="metric-value">{base_sim:.4f}</span>
+                    <span class="similarity-badge {sim_badge}">{sim_text}</span>
+                </div>
+                <div class="metric-item">
                     Стандартное отклонение: <span class="metric-value">{base_std:.4f}</span>
                 </div>
                 <div class="metric-item">
-                    Диапазон: [{base_min:.4f}, {base_max:.4f}]
+                    Диапазон схожести: [{base_min_sim:.4f}, {base_max_sim:.4f}]
                 </div>
     '''.format(
                 base_count=metrics['base_metrics']['count'],
                 base_bdr=metrics['base_metrics']['binary_detection_rate'],
                 base_mean=metrics['base_metrics']['mean_cosine_distance'],
+                base_sim=base_mean_sim,
+                sim_badge=base_sim_badge,
+                sim_text='Высокая' if base_mean_sim > 0.8 else 'Нормальная' if base_mean_sim >= 0.6 else 'Низкая' if base_mean_sim >= 0.4 else 'Очень низкая',
                 base_std=metrics['base_metrics']['std_cosine_distance'],
-                base_min=metrics['base_metrics']['min_cosine_distance'],
-                base_max=metrics['base_metrics']['max_cosine_distance']
+                base_min_sim=metrics['base_metrics']['min_cosine_similarity'],
+                base_max_sim=metrics['base_metrics']['max_cosine_similarity']
             )
 
         html_content += '''
@@ -842,6 +1085,9 @@ class EmbeddingBenchmark:
                     'test_better_by_composite'] else '✗ Базовый метод лучше'
             )
 
+        # Добавляем раздел с интерпретацией для RAG
+        html_content += self.create_rag_interpretation_section(metrics)
+
         # Таблица расстояний
         html_content += '''
             <h2>Детальные Расстояния</h2>
@@ -850,6 +1096,7 @@ class EmbeddingBenchmark:
                     <th>Тип</th>
                     <th>Метка</th>
                     <th>Косинусное расстояние</th>
+                    <th>Косинусная схожесть</th>
                     <th>Евклидово расстояние</th>
                     <th>Превышает порог T</th>
                 </tr>
@@ -860,11 +1107,16 @@ class EmbeddingBenchmark:
             exceeds_threshold = dist['cosine_distance'] > metrics['threshold_T']
             exceeds_text = '<span class="good">Да</span>' if exceeds_threshold else '<span class="bad">Нет</span>'
 
+            # Определяем цвет для схожести
+            similarity = dist['cosine_similarity']
+            sim_color = 'green' if similarity > 0.8 else 'blue' if similarity >= 0.6 else 'orange' if similarity >= 0.4 else 'red'
+
             html_content += '''
                 <tr class="{row_class}">
                     <td>{type_text}</td>
                     <td>{label}</td>
                     <td>{cosine_dist:.4f}</td>
+                    <td><span style="color: {sim_color};">{cosine_sim:.4f}</span></td>
                     <td>{euclidean_dist:.4f}</td>
                     <td>{exceeds_text}</td>
                 </tr>
@@ -873,6 +1125,8 @@ class EmbeddingBenchmark:
                 type_text='Исследуемый' if dist['source'] == 'test' else 'Базовый',
                 label=dist['label'],
                 cosine_dist=dist['cosine_distance'],
+                cosine_sim=similarity,
+                sim_color=sim_color,
                 euclidean_dist=dist['euclidean_distance'],
                 exceeds_text=exceeds_text
             )
@@ -909,6 +1163,14 @@ class EmbeddingBenchmark:
                 <p>Исследуемые эмбеддинги показывают <span class="bad">неудовлетворительные результаты</span> 
                 (Binary Detection Rate ≤ 50%). Модель плохо отделяет элементы интерфейса от фона.</p>
     '''
+
+        # Добавляем рекомендации по RAG
+        if metrics.get('test_metrics') and 'rag_interpretation' in metrics['test_metrics']:
+            rag_test = metrics['test_metrics']['rag_interpretation']
+            html_content += f'''
+                <p><strong>Рекомендация для RAG:</strong> {rag_test['recommendation']}</p>
+                <p><strong>Ожидаемое влияние на качество RAG:</strong> {rag_test['rag_effect']}</p>
+            '''
 
         html_content += '''
             </div>
@@ -977,16 +1239,29 @@ class EmbeddingBenchmark:
         print(f"\nПорог T: {metrics['threshold_T']:.4f} ({metrics['threshold_source']})")
 
         if metrics['test_metrics']:
+            test_sim = metrics['test_metrics']['mean_cosine_similarity']
+            rag_interpretation = metrics['test_metrics']['rag_interpretation']
+
             print(f"\n--- Исследуемые эмбеддинги ---")
             print(f"Binary Detection Rate: {metrics['test_metrics']['binary_detection_rate']:.2f}%")
-            print(f"Среднее расстояние: {metrics['test_metrics']['mean_cosine_distance']:.4f}")
+            print(f"Среднее косинусное расстояние: {metrics['test_metrics']['mean_cosine_distance']:.4f}")
+            print(f"Средняя косинусная схожесть: {test_sim:.4f}")
             print(f"Стандартное отклонение: {metrics['test_metrics']['std_cosine_distance']:.4f}")
+            print(f"\nИнтерпретация для RAG: {rag_interpretation['interpretation']}")
+            print(f"Влияние на RAG: {rag_interpretation['rag_effect']}")
+            print(f"Рекомендация: {rag_interpretation['recommendation']}")
 
         if metrics['base_metrics']:
+            base_sim = metrics['base_metrics']['mean_cosine_similarity']
+            rag_interpretation_base = metrics['base_metrics']['rag_interpretation']
+
             print(f"\n--- Базовые эмбеддинги ---")
             print(f"Binary Detection Rate: {metrics['base_metrics']['binary_detection_rate']:.2f}%")
-            print(f"Среднее расстояние: {metrics['base_metrics']['mean_cosine_distance']:.4f}")
+            print(f"Среднее косинусное расстояние: {metrics['base_metrics']['mean_cosine_distance']:.4f}")
+            print(f"Средняя косинусная схожесть: {base_sim:.4f}")
             print(f"Стандартное отклонение: {metrics['base_metrics']['std_cosine_distance']:.4f}")
+            print(f"\nИнтерпретация для RAG: {rag_interpretation_base['interpretation']}")
+            print(f"Влияние на RAG: {rag_interpretation_base['rag_effect']}")
 
         if metrics['comparison']:
             print(f"\n--- Сравнительный анализ ---")
