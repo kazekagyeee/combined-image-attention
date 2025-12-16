@@ -6,7 +6,7 @@ from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
 from detectors import YOLOv8Detector, UIEDDetector
-from captioning import CaptionerQwen, CaptionerBLIP, CaptionerGLM, CaptionerPaliGemma, TextEmbedderBERT as TextEmbedder
+from captioning import CaptionerQwen, CaptionerBLIP, CaptionerGLM, CaptionerGemma3, TextEmbedderBERT as TextEmbedder
 from config import PipelineConfig
 
 
@@ -44,8 +44,8 @@ class VLMPipeline:
             self.captioner = CaptionerBLIP(device=config.device)
         elif config.captioner_model == 'glm':
             self.captioner = CaptionerGLM(device=config.device)
-        elif config.captioner_model == 'paligemma':
-            self.captioner = CaptionerPaliGemma(device=config.device)
+        elif config.captioner_model == 'gemma':
+            self.captioner = CaptionerGemma3(device=config.device)
         else:
             self.captioner = None
             print("Invalid captioner model")
