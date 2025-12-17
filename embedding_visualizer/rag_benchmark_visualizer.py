@@ -2,267 +2,165 @@ import json
 import numpy as np
 import warnings
 from scipy.spatial.distance import cosine
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans, DBSCAN
-from sklearn.metrics import (
-    silhouette_score,
-    calinski_harabasz_score,
-    davies_bouldin_score,
-)
+from scipy.stats import wasserstein_distance
 from config import BenchmarkConfig
 
 warnings.filterwarnings("ignore")
 
 
-class RAGMetricsBenchmark:
+class RAGDiagnosticBenchmark:
     def __init__(self, config=BenchmarkConfig):
         self.embeddings = {}
         self.sources = []
-        self.core_embedding_path = config.core_embedding_path
+        self.parent_info = []
+        self.core_embedding_path = config.core_embeddings_path
         self.embeddings_under_research = config.embeddings_under_research
         self.base_embeddings_path = config.base_embeddings_path
 
-    # ============================================================
-    # LOAD
-    # ============================================================
+    # ================= LOAD =================
     def load_embeddings(self):
         with open(self.core_embedding_path, "r", encoding="utf-8") as f:
-            core = json.load(f)
-        self.embeddings["parent"] = np.array(core[0]["text_embedding"]).reshape(1, -1)
-        self.sources.append("parent")
+            parents = json.load(f)
+
+        self.embeddings["parents"] = np.array([x["text_embedding"] for x in parents])
+        self.parent_info = [
+            x.get("question", f"Parent_{i+1}") for i, x in enumerate(parents)
+        ]
 
         with open(self.embeddings_under_research, "r", encoding="utf-8") as f:
-            test_data = json.load(f)
-        test_embs = [np.array(x["text_embedding"]) for x in test_data]
-        self.embeddings["test"] = np.array(test_embs)
-        self.sources.extend(["test"] * len(test_embs))
+            test = json.load(f)
+        self.embeddings["test"] = np.array([x["text_embedding"] for x in test])
 
         with open(self.base_embeddings_path, "r", encoding="utf-8") as f:
-            base_data = json.load(f)
-        base_embs = [np.array(x["text_embedding"]) for x in base_data]
-        self.embeddings["base"] = np.array(base_embs)
-        self.sources.extend(["base"] * len(base_embs))
+            base = json.load(f)
+        self.embeddings["base"] = np.array([x["text_embedding"] for x in base])
 
-    # ============================================================
-    # ALIGN
-    # ============================================================
+    # ================= ALIGN =================
     def align_dimensions(self):
-        dims = [
-            self.embeddings["parent"].shape[1],
+        min_dim = min(
+            self.embeddings["parents"].shape[1],
             self.embeddings["test"].shape[1],
             self.embeddings["base"].shape[1],
-        ]
-        min_dim = min(dims)
-
+        )
         for k in self.embeddings:
             self.embeddings[k] = self.embeddings[k][:, :min_dim]
 
-    # ============================================================
-    # COMBINE
-    # ============================================================
-    def combine(self):
-        return np.vstack(
-            [
-                self.embeddings["parent"],
-                self.embeddings["test"],
-                self.embeddings["base"],
-            ]
-        )
+    # ================= DIAGNOSTIC METRICS =================
+    def diagnostic_metrics(self):
+        results = []
 
-    # ============================================================
-    # RETRIEVAL (PARENT → CHILDREN)
-    # ============================================================
-    def calculate_retrieval_metrics(self, embeddings, k_values=(1, 3, 5, 10)):
-        parent = embeddings[0]
-        children = embeddings[1:]
-        child_sources = self.sources[1:]
+        for p_idx, parent in enumerate(self.embeddings["parents"]):
+            test_dist = np.array([cosine(parent, c) for c in self.embeddings["test"]])
+            base_dist = np.array([cosine(parent, c) for c in self.embeddings["base"]])
 
-        distances = np.array([cosine(parent, x) for x in children])
-        ranking = np.argsort(distances)
+            test_sim = 1 - test_dist
+            base_sim = 1 - base_dist
 
-        ranked_sources = [child_sources[i] for i in ranking]
-        ranked_distances = distances[ranking]
+            # Effect size (Cohen's d)
+            pooled_std = np.sqrt(
+                (np.var(test_dist) + np.var(base_dist)) / 2
+            )
+            cohens_d = (
+                (np.mean(base_dist) - np.mean(test_dist)) / pooled_std
+                if pooled_std > 0 else 0
+            )
 
-        metrics = {}
+            results.append({
+                "parent": self.parent_info[p_idx],
+                "test_mean_distance": float(np.mean(test_dist)),
+                "base_mean_distance": float(np.mean(base_dist)),
+                "test_median_distance": float(np.median(test_dist)),
+                "base_median_distance": float(np.median(base_dist)),
+                "test_mean_similarity": float(np.mean(test_sim)),
+                "base_mean_similarity": float(np.mean(base_sim)),
+                "distance_gap": float(np.mean(base_dist) - np.mean(test_dist)),
+                "cohens_d": float(cohens_d),
+                "wasserstein": float(wasserstein_distance(test_dist, base_dist)),
+            })
 
-        for method in ("test", "base"):
-            idxs = [i for i, s in enumerate(ranked_sources) if s == method]
-            ranks = [i + 1 for i in idxs]
-            dists = [float(ranked_distances[i]) for i in idxs]
+        return results
 
-            metrics[method] = {
-                "mean_distance": float(np.mean(dists)),
-                "median_distance": float(np.median(dists)),
-                "mean_rank": float(np.mean(ranks)),
-                "mrr": float(np.mean([1 / r for r in ranks])),
-                "recall_at_k": {},
-                "precision_at_k": {},
-            }
+    # ================= AGGREGATE =================
+    def aggregate(self, per_parent):
+        keys = per_parent[0].keys()
+        agg = {}
 
-            for k in k_values:
-                top_k = ranked_sources[:k]
-                hits = sum(1 for x in top_k if x == method)
-                metrics[method]["recall_at_k"][k] = hits / len(idxs)
-                metrics[method]["precision_at_k"][k] = hits / k
+        for k in keys:
+            if k == "parent":
+                continue
+            agg[k] = float(np.mean([p[k] for p in per_parent]))
 
-        metrics["distance_gap"] = (
-            metrics["base"]["mean_distance"]
-            - metrics["test"]["mean_distance"]
-        )
+        verdict = "TEST BETTER" if agg["distance_gap"] > 0 else "BASE BETTER"
 
-        return metrics
+        return agg, verdict
 
-    # ============================================================
-    # CLUSTERING (DIAGNOSTIC ONLY)
-    # ============================================================
-    def calculate_clustering_metrics(self, embeddings):
-        children = embeddings[1:]
-        X = StandardScaler().fit_transform(children)
-
-        sil, cal, dav = [], [], []
-        cluster_range = range(2, min(10, len(X)))
-
-        for k in cluster_range:
-            km = KMeans(n_clusters=k, n_init=10, random_state=42)
-            labels = km.fit_predict(X)
-            sil.append(silhouette_score(X, labels))
-            cal.append(calinski_harabasz_score(X, labels))
-            dav.append(davies_bouldin_score(X, labels))
-
-        best_k = list(cluster_range)[int(np.argmax(sil))]
-
-        db = DBSCAN(eps=0.6, min_samples=5).fit_predict(X)
-        noise_ratio = float(np.mean(db == -1))
-
-        return {
-            "kmeans": {
-                "k": int(best_k),
-                "silhouette": float(max(sil)),
-                "calinski": float(max(cal)),
-                "davies": float(min(dav)),
-            },
-            "dbscan": {
-                "noise_ratio": noise_ratio,
-            },
-        }
-
-    # ============================================================
-    # REPORT
-    # ============================================================
-    def create_report(self, retrieval, clustering):
-        def row(name, t, b, fmt="{:.4f}"):
-            return f"""
+    # ================= HTML =================
+    def save_html(self, per_parent, agg, verdict):
+        rows = ""
+        for p in per_parent:
+            rows += f"""
             <tr>
-                <td>{name}</td>
-                <td>{fmt.format(t)}</td>
-                <td>{fmt.format(b)}</td>
+                <td>{p['parent'][:40]}</td>
+                <td>{p['test_mean_distance']:.4f}</td>
+                <td>{p['base_mean_distance']:.4f}</td>
+                <td>{p['distance_gap']:.4f}</td>
+                <td>{p['cohens_d']:.2f}</td>
             </tr>
             """
 
-        test = retrieval["test"]
-        base = retrieval["base"]
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>RAG Diagnostic Benchmark</title>
+<style>
+body {{ font-family: Arial; margin: 40px; background:#f8f9fa; }}
+table {{ border-collapse: collapse; width: 100%; }}
+th, td {{ border: 1px solid #ccc; padding: 8px; text-align: center; }}
+th {{ background: #343a40; color: white; }}
+.verdict {{ font-size: 24px; margin: 30px 0; }}
+.good {{ color: green; }}
+.bad {{ color: red; }}
+</style>
+</head>
+<body>
 
-        verdict = "TEST BETTER" if retrieval["distance_gap"] > 0 else "BASE BETTER"
+<h1>RAG Diagnostic Benchmark</h1>
 
-        rows = ""
-        rows += row("Mean cosine distance", test["mean_distance"], base["mean_distance"])
-        rows += row("Median distance", test["median_distance"], base["median_distance"])
-        rows += row("Mean rank", test["mean_rank"], base["mean_rank"], "{:.2f}")
-        rows += row("MRR", test["mrr"], base["mrr"])
+<table>
+<tr>
+<th>Parent</th>
+<th>Test Mean Dist</th>
+<th>Base Mean Dist</th>
+<th>Distance Gap</th>
+<th>Cohen’s d</th>
+</tr>
+{rows}
+</table>
 
-        for k in sorted(test["recall_at_k"]):
-            rows += row(
-                f"Recall@{k}",
-                test["recall_at_k"][k],
-                base["recall_at_k"][k],
-            )
-            rows += row(
-                f"Precision@{k}",
-                test["precision_at_k"][k],
-                base["precision_at_k"][k],
-            )
+<h2 class="verdict {'good' if verdict=='TEST BETTER' else 'bad'}">
+Verdict: {verdict}
+</h2>
 
-        with open("rag_metrics_report.html", "w", encoding="utf-8") as f:
-            f.write(f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-    <meta charset="utf-8">
-    <title>RAG Embedding Benchmark</title>
-    <style>
-    body {{
-        font-family: Arial, sans-serif;
-        margin: 40px;
-    }}
-    table {{
-        border-collapse: collapse;
-        width: 70%;
-    }}
-    th, td {{
-        border: 1px solid #ccc;
-        padding: 8px 12px;
-        text-align: center;
-    }}
-    th {{
-        background-color: #f4f4f4;
-    }}
-    tr:nth-child(even) {{
-        background-color: #fafafa;
-    }}
-    .verdict {{
-        font-size: 28px;
-        margin-top: 30px;
-        font-weight: bold;
-    }}
-    </style>
-    </head>
-    <body>
+<h3>Aggregated</h3>
+<pre>{json.dumps(agg, indent=2)}</pre>
 
-    <h1>RAG Embedding Benchmark</h1>
+</body>
+</html>
+"""
 
-    <h2>Retrieval Metrics</h2>
-    <table>
-    <tr>
-        <th>Metric</th>
-        <th>Test</th>
-        <th>Base</th>
-    </tr>
-    {rows}
-    </table>
+        with open("rag_diagnostic_report.html", "w", encoding="utf-8") as f:
+            f.write(html)
 
-    <h2>Clustering Diagnostics</h2>
-    <table>
-    <tr><th>Metric</th><th>Value</th></tr>
-    <tr><td>KMeans clusters (k)</td><td>{clustering["kmeans"]["k"]}</td></tr>
-    <tr><td>Silhouette</td><td>{clustering["kmeans"]["silhouette"]:.4f}</td></tr>
-    <tr><td>Calinski–Harabasz</td><td>{clustering["kmeans"]["calinski"]:.2f}</td></tr>
-    <tr><td>Davies–Bouldin</td><td>{clustering["kmeans"]["davies"]:.4f}</td></tr>
-    <tr><td>DBSCAN noise ratio</td><td>{clustering["dbscan"]["noise_ratio"]:.4f}</td></tr>
-    </table>
-
-    <div class="verdict">{verdict}</div>
-
-    </body>
-    </html>
-    """)
-
-    # ============================================================
-    # RUN
-    # ============================================================
+    # ================= RUN =================
     def run(self):
         self.load_embeddings()
         self.align_dimensions()
-        all_embs = self.combine()
-
-        retrieval = self.calculate_retrieval_metrics(all_embs)
-        clustering = self.calculate_clustering_metrics(all_embs)
-
-        self.create_report(retrieval, clustering)
-
-        print("RAG benchmark finished")
-        print("Distance gap:", retrieval["distance_gap"])
-        print("Verdict:", "TEST BETTER" if retrieval["distance_gap"] > 0 else "BASE BETTER")
+        per_parent = self.diagnostic_metrics()
+        agg, verdict = self.aggregate(per_parent)
+        self.save_html(per_parent, agg, verdict)
+        print("Saved: rag_diagnostic_report.html")
 
 
 if __name__ == "__main__":
-    RAGMetricsBenchmark().run()
+    RAGDiagnosticBenchmark().run()

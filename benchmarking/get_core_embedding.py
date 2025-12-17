@@ -1,7 +1,6 @@
 import torch
 from transformers import AutoTokenizer, AutoModel
 import numpy as np
-from pathlib import Path
 import json
 import warnings
 
@@ -93,67 +92,17 @@ class TextEmbedderBERT:
             return None
 
 
-def find_single_file_pair(folder_path, base_name=None):
+def generate_embeddings_for_questions(questions, output_json, pooling_strategy='cls'):
     """
-    Находит пару файлов (изображение + текст) в папке
-    Если указан base_name - ищет конкретную пару, иначе первую найденную
-    """
-    folder = Path(folder_path)
-
-    # Поддерживаемые форматы изображений
-    image_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.gif', '.tiff', '.webp']
-
-    if base_name:
-        # Ищем конкретную пару по имени
-        for ext in image_extensions:
-            image_path = folder / f"{base_name}{ext}"
-            if image_path.exists():
-                text_path = folder / f"{base_name}.txt"
-                if text_path.exists():
-                    return image_path, text_path
-                else:
-                    # Проверяем другие варианты расширений текста
-                    for txt_ext in ['.txt', '.text', '.md']:
-                        text_path = folder / f"{base_name}{txt_ext}"
-                        if text_path.exists():
-                            return image_path, text_path
-    else:
-        # Ищем первую подходящую пару
-        for ext in image_extensions:
-            for image_path in folder.glob(f"*{ext}"):
-                # Проверяем существование текстового файла
-                for txt_ext in ['.txt', '.text', '.md']:
-                    text_path = folder / f"{image_path.stem}{txt_ext}"
-                    if text_path.exists():
-                        return image_path, text_path
-
-    return None, None
-
-
-def get_text_from_file(text_path):
-    """
-    Читает текст из файла
-    """
-    try:
-        with open(text_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
-    except Exception as e:
-        print(f"Ошибка чтения файла {text_path}: {e}")
-        return ""
-
-
-def get_multiple_text_embeddings(folder_path, output_json, base_names=None, pooling_strategy='cls'):
-    """
-    Рассчитывает эмбеддинги BERT для нескольких текстов из парных файлов
+    Генерация эмбеддингов для списка вопросов
 
     Аргументы:
-        folder_path: путь к папке с файлами
+        questions: список вопросов для обработки
         output_json: путь для сохранения JSON файла
-        base_names: список имен файлов (без расширений) для обработки
         pooling_strategy: стратегия пулинга для BERT
     """
     print("=" * 60)
-    print("РАСЧЕТ ЭМБЕДДИНГОВ BERT ДЛЯ ТЕКСТОВ")
+    print("ГЕНЕРАЦИЯ ЭМБЕДДИНГОВ ДЛЯ ВОПРОСОВ")
     print("=" * 60)
 
     # Инициализируем BERT эмбеддер
@@ -161,61 +110,24 @@ def get_multiple_text_embeddings(folder_path, output_json, base_names=None, pool
 
     records = []
 
-    # Если указаны конкретные имена файлов
-    if base_names:
-        file_names = base_names
-    else:
-        # Получаем список всех текстовых файлов в папке
-        folder = Path(folder_path)
-        text_files = list(folder.glob("*.txt")) + list(folder.glob("*.text")) + list(folder.glob("*.md"))
-        # Берем только имена без расширений
-        file_names = [f.stem for f in text_files]
+    print(f"Найдено {len(questions)} вопросов для обработки")
 
-    print(f"Найдено {len(file_names)} текстовых файлов для обработки")
-
-    for base_name in file_names:
-        print(f"\nОбработка: {base_name}")
-
-        # Находим пару файлов
-        image_path, text_path = find_single_file_pair(folder_path, base_name)
-
-        if not text_path:
-            print(f"Текстовый файл не найден для {base_name}, пропускаем...")
-            continue
-
-        # Читаем текст
-        text = get_text_from_file(text_path)
-
-        if not text:
-            print(f"Текстовый файл пустой для {base_name}, пропускаем...")
-            continue
-
-        print(f"Текст (первые 100 символов): {text[:100]}...")
+    for i, question in enumerate(questions, 1):
+        print(f"\nОбработка вопроса {i}/{len(questions)}:")
+        print(f"Вопрос: {question[:100]}..." if len(question) > 100 else f"Вопрос: {question}")
 
         # Получаем эмбеддинг BERT
         print(f"Извлечение эмбеддинга BERT (стратегия: {pooling_strategy})...")
-        embedding = embedder.get_text_embedding(text, pooling_strategy)
+        embedding = embedder.get_text_embedding(question, pooling_strategy)
 
         if embedding is None:
-            print(f"Не удалось извлечь эмбеддинг для {base_name}!")
+            print(f"Не удалось извлечь эмбеддинг для вопроса {i}!")
             continue
 
-        # Создаем запись
+        # Создаем запись согласно требуемой структуре
         record = {
-            "base_name": base_name,
-            "text_path": str(text_path.absolute()) if text_path else "",
-            "image_path": str(image_path.absolute()) if image_path else "",
-            "text": text[:500] + "..." if len(text) > 500 else text,  # Сохраняем часть текста
-            "text_length": len(text),
-            "pooling_strategy": pooling_strategy,
-            "embedding_dim": len(embedding),
-            "text_embedding": embedding.tolist(),
-            "embedding_stats": {
-                "min": float(np.min(embedding)),
-                "max": float(np.max(embedding)),
-                "mean": float(np.mean(embedding)),
-                "std": float(np.std(embedding))
-            }
+            "question": question,
+            "text_embedding": embedding.tolist()
         }
 
         records.append(record)
@@ -223,7 +135,7 @@ def get_multiple_text_embeddings(folder_path, output_json, base_names=None, pool
         print(f"✓ Эмбеддинг успешно извлечен (размерность: {len(embedding)})")
 
     if not records:
-        print("Не удалось обработать ни один файл!")
+        print("Не удалось обработать ни один вопрос!")
         return None
 
     # Сохраняем в JSON файл
@@ -235,66 +147,45 @@ def get_multiple_text_embeddings(folder_path, output_json, base_names=None, pool
 
     # Выводим сводную статистику
     print("\n" + "=" * 60)
-    print("СВОДНАЯ СТАТИСТИКА ЭМБЕДДИНГОВ")
+    print("СВОДНАЯ СТАТИСТИКА")
     print("=" * 60)
 
     for i, record in enumerate(records):
-        print(f"\n{i + 1}. {record['base_name']}:")
-        print(f"   Длина текста: {record['text_length']} символов")
-        print(f"   Размерность эмбеддинга: {record['embedding_dim']}")
-        print(f"   Min: {record['embedding_stats']['min']:.6f}")
-        print(f"   Max: {record['embedding_stats']['max']:.6f}")
-        print(f"   Mean: {record['embedding_stats']['mean']:.6f}")
+        embedding_array = np.array(record['text_embedding'])
+        print(f"\n{i + 1}. Вопрос (первые 50 символов): {record['question'][:50]}...")
+        print(f"   Размерность эмбеддинга: {len(embedding_array)}")
+        print(f"   Min: {float(np.min(embedding_array)):.6f}")
+        print(f"   Max: {float(np.max(embedding_array)):.6f}")
+        print(f"   Mean: {float(np.mean(embedding_array)):.6f}")
 
     return records
 
 
-def calculate_single_bert_embedding(folder_path, output_json, base_name=None, pooling_strategy='cls'):
+def calculate_single_question_embedding(question, output_json, pooling_strategy='cls'):
     """
-    Рассчитывает эмбеддинг BERT для одной пары изображение+текст
-    (Только текст используется для BERT)
+    Рассчитывает эмбеддинг BERT для одного вопроса
+
+    Аргументы:
+        question: вопрос для обработки
+        output_json: путь для сохранения JSON файла
+        pooling_strategy: стратегия пулинга для BERT
     """
     print("=" * 60)
-    print("РАСЧЕТ ЭМБЕДДИНГА BERT ДЛЯ ОДНОГО ТЕКСТА")
+    print("РАСЧЕТ ЭМБЕДДИНГА BERT ДЛЯ ОДНОГО ВОПРОСА")
     print("=" * 60)
 
-    # Находим пару файлов
-    image_path, text_path = find_single_file_pair(folder_path, base_name)
-
-    if not text_path:
-        print(f"Не удалось найти текстовый файл в папке: {folder_path}")
-        if base_name:
-            print(f"Искали по имени: {base_name}")
-
-        # Показываем какие файлы есть в папке
-        folder = Path(folder_path)
-        files = list(folder.iterdir())
-        if files:
-            print("Файлы в папке:")
-            for f in files:
-                print(f"  - {f.name}")
+    if not question or not question.strip():
+        print("Вопрос не может быть пустым!")
         return None
 
-    print(f"Найдена пара файлов:")
-    if image_path:
-        print(f"  Изображение: {image_path.name}")
-    print(f"  Текст: {text_path.name}")
-
-    # Читаем текст
-    text = get_text_from_file(text_path)
-
-    if not text:
-        print("Текстовый файл пустой!")
-        return None
-
-    print(f"Текст (первые 200 символов): {text[:200]}...")
+    print(f"Вопрос: {question}")
 
     # Инициализируем BERT эмбеддер
     embedder = TextEmbedderBERT()
 
     # Получаем эмбеддинг BERT
     print(f"\nИзвлечение эмбеддинга BERT (стратегия: {pooling_strategy})...")
-    embedding = embedder.get_text_embedding(text, pooling_strategy)
+    embedding = embedder.get_text_embedding(question, pooling_strategy)
 
     if embedding is None:
         print("Не удалось извлечь эмбеддинг BERT!")
@@ -305,19 +196,8 @@ def calculate_single_bert_embedding(folder_path, output_json, base_name=None, po
 
     # Создаем запись в формате JSON
     record = {
-        "base_name": base_name if base_name else text_path.stem,
-        "text_path": str(text_path.absolute()),
-        "image_path": str(image_path.absolute()) if image_path else "",
-        "text": text[:1000] + "..." if len(text) > 1000 else text,
-        "text_length": len(text),
-        "pooling_strategy": pooling_strategy,
-        "text_embedding": embedding.tolist(),
-        "embedding_stats": {
-            "min": float(np.min(embedding)),
-            "max": float(np.max(embedding)),
-            "mean": float(np.mean(embedding)),
-            "std": float(np.std(embedding))
-        }
+        "question": question,
+        "text_embedding": embedding.tolist()
     }
 
     # Сохраняем в JSON файл
@@ -328,24 +208,26 @@ def calculate_single_bert_embedding(folder_path, output_json, base_name=None, po
 
     # Выводим информацию об эмбеддинге
     print("\nИнформация об эмбеддинге BERT:")
-    print(f"  Имя файла: {record['base_name']}")
-    print(f"  Длина текста: {len(text)} символов")
+    print(f"  Вопрос: {question[:100]}..." if len(question) > 100 else f"  Вопрос: {question}")
     print(f"  Размерность эмбеддинга: {len(record['text_embedding'])}")
     print(f"  Стратегия пулинга: {pooling_strategy}")
     print(f"  Первые 5 значений: {record['text_embedding'][:5]}")
-    print(f"  Минимальное значение: {record['embedding_stats']['min']:.6f}")
-    print(f"  Максимальное значение: {record['embedding_stats']['max']:.6f}")
-    print(f"  Среднее значение: {record['embedding_stats']['mean']:.6f}")
-    print(f"  Стандартное отклонение: {record['embedding_stats']['std']:.6f}")
 
     return record
 
 
 if __name__ == "__main__":
     # Конфигурация
-    folder_path = "../images"
-    output_json = "core_embedding.json"
-    base_name = "image_20_2"  # Без расширения, можно указать None для обработки всех файлов
+    output_json = "core_embeddings.json"
+
+    # Список вопросов для обработки
+    questions = [
+        "Что нужно сделать, чтобы реквизиты организации заполнились автоматически при её создании?",
+        "Какие данные необходимо указать при создании организации, чтобы реквизиты заполнились автоматически?",
+        "При каких условиях реквизиты организации заполняются автоматически?",
+        "Что произойдёт, если введённый ИНН отсутствует в государственном реестре?",
+        "На каком этапе работы с карточкой организации выполняется автоматическое заполнение реквизитов?"
+    ]
 
     # Выберите стратегию пулинга:
     # 'cls' - использует [CLS] токен (рекомендуется)
@@ -353,18 +235,17 @@ if __name__ == "__main__":
     # 'max' - максимальный пулинг
     pooling_strategy = 'cls'
 
-    # Обработка одного файла
-    record = calculate_single_bert_embedding(
-        folder_path=folder_path,
+    # Обработка всех вопросов
+    records = generate_embeddings_for_questions(
+        questions=questions,
         output_json=output_json,
-        base_name=base_name,
         pooling_strategy=pooling_strategy
     )
 
-    # Или для обработки всех текстовых файлов в папке:
-    # records = get_multiple_text_embeddings(
-    #     folder_path=folder_path,
+    # Или для обработки одного вопроса:
+    # single_question = "Что нужно сделать, чтобы реквизиты организации заполнились автоматически при её создании?"
+    # record = calculate_single_question_embedding(
+    #     question=single_question,
     #     output_json=output_json,
-    #     base_names=None,  # None означает все файлы
     #     pooling_strategy=pooling_strategy
     # )
