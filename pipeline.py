@@ -6,7 +6,7 @@ from PIL import Image
 from tqdm import tqdm
 from helpers import ensure_dir, save_crop
 from detectors import YOLOv8Detector, UIEDDetector
-from captioning import CaptionerQwen, CaptionerBLIP, CaptionerGLM, CaptionerGemma3, TextEmbedderBERT as TextEmbedder
+from captioning import CaptionerQwen, CaptionerBLIP, CaptionerGLM, CaptionerGemma3
 from config import PipelineConfig
 
 
@@ -49,9 +49,6 @@ class VLMPipeline:
         else:
             self.captioner = None
             print("Invalid captioner model")
-
-        # use BERT-based contextual embedder
-        self.embedder = TextEmbedder(device=config.device)
 
     def process_image(self, image_path: str, prompt: str = None) -> list:
         """Обрабатывает одно изображение с возможностью указать индивидуальный промт."""
@@ -106,12 +103,6 @@ class VLMPipeline:
                 "crop_wh": [w, h]
             })
 
-        # compute contextual embeddings (BERT) for all captions
-        captions = [it["caption"] for it in items]
-        embeddings = self.embedder.embed(captions)
-        for it, emb in zip(items, embeddings):
-            it["text_embedding"] = emb.tolist()
-
         return items
 
     def run(self) -> list:
@@ -119,8 +110,11 @@ class VLMPipeline:
         ensure_dir(self.config.out_dir)
 
         all_metadata = []
+        triplet_data = []
         image_files = list(Path(self.config.input_dir).glob("*"))
         image_files = [str(p) for p in image_files if p.suffix.lower() in [".jpg", ".jpeg", ".png", ".bmp"]]
+
+        import random
 
         for img_path in tqdm(image_files, desc="Processing images with individual prompts"):
             # Получаем промт для текущего изображения
@@ -132,6 +126,31 @@ class VLMPipeline:
 
             items = self.process_image(img_path, prompt=prompt)
             all_metadata.extend(items)
+
+            # Формируем выборку триплетов для обучения
+            if len(items) > 1:
+                img = Image.open(img_path)
+                w_img, h_img = img.size
+                
+                for item in items:
+                    neg_candidates = [other for other in items if other != item]
+                    if neg_candidates:
+                        neg_item = random.choice(neg_candidates)
+                        
+                        def normalize_bbox(b):
+                            return [
+                                max(0.0, min(1.0, b[0]/w_img)), 
+                                max(0.0, min(1.0, b[1]/h_img)), 
+                                max(0.0, min(1.0, b[2]/w_img)), 
+                                max(0.0, min(1.0, b[3]/h_img))
+                            ]
+
+                        triplet_data.append({
+                            "image_path": item["orig_path"],
+                            "text": item["caption"],
+                            "pos_bbox": normalize_bbox(item["bbox"]),
+                            "neg_bbox": normalize_bbox(neg_item["bbox"])
+                        })
 
         # normalize rel_size_coeff to sum=1 across all found crops
         if all_metadata:
@@ -145,5 +164,11 @@ class VLMPipeline:
         with open(out_json, "w", encoding="utf-8") as f:
             json.dump(all_metadata, f, ensure_ascii=False, indent=2)
 
+        # save triplet data
+        triplet_json = os.path.join(self.config.out_dir, "triplet_dataset.json")
+        with open(triplet_json, "w", encoding="utf-8") as f:
+            json.dump(triplet_data, f, ensure_ascii=False, indent=2)
+
         print(f"Saved metadata to {out_json} — {len(all_metadata)} crops total.")
+        print(f"Saved triplet dataset for training to {triplet_json} — {len(triplet_data)} samples total.")
         return all_metadata

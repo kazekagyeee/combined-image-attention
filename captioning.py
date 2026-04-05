@@ -72,9 +72,9 @@ class CaptionerBLIP(CaptionerBase):
         return caption
 
 class CaptionerQwen(CaptionerBase):
-    """Генератор текстовых описаний для изображений с помощью Qwen2‑VL‑7B."""
+    """Генератор текстовых описаний для изображений с помощью Qwen2‑VL‑3B."""
 
-    def __init__(self, model_name = "Qwen/Qwen2.5-VL-7B-Instruct", device='cuda'):
+    def __init__(self, model_name = "Qwen/Qwen2.5-VL-3B-Instruct", device='cuda'):
         super().__init__(device)
         print("Loading Qwen2‑VL model:", model_name)
         # Загружаем процессор (tokenizer + визуальную часть)
@@ -82,7 +82,7 @@ class CaptionerQwen(CaptionerBase):
         # Загружаем модель
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name,
-            device_map="auto",  # можно выбрать вручную, но “auto” часто хорошо
+            device_map=device,
             torch_dtype=torch.float16  # рекомендовано для памяти
         )
         self.model.to(device)
@@ -240,7 +240,7 @@ class CaptionerGLM(CaptionerBase):
         self.model = AutoModel.from_pretrained(
             model_name,
             torch_dtype=torch.float16,
-            device_map="auto",
+            device_map=device,
             trust_remote_code=True
         ).eval()
 
@@ -328,7 +328,7 @@ class CaptionerGemma3(CaptionerBase):
         self.model = Gemma3ForConditionalGeneration.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16,
-            device_map="auto",
+            device_map=device,
             **from_pretrained_kwargs
         ).eval()
 
@@ -500,7 +500,7 @@ class TextEmbedderQwen:
         self.model = AutoModel.from_pretrained(
             model_name,
             torch_dtype=torch.float16 if self.device == 'cuda' else torch.float32,
-            device_map="auto" if self.device == 'cuda' else None,
+            device_map=self.device,
             trust_remote_code=True
         ).to(self.device)
 
