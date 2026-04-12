@@ -361,13 +361,13 @@ def is_block(clip, thread=0.15):
     # top border - scan top down
     blank_count = 0
     for i in range(1, 5):
-        if sum(clip[side + i]) / 255 > thread * clip.shape[1]:
+        if clip[side + i].astype(np.int32).sum() / 255 > thread * clip.shape[1]:
             blank_count += 1
     if blank_count > 2: return False
     # left border - scan left to right
     blank_count = 0
     for i in range(1, 5):
-        if sum(clip[:, side + i]) / 255 > thread * clip.shape[0]:
+        if clip[:, side + i].astype(np.int32).sum() / 255 > thread * clip.shape[0]:
             blank_count += 1
     if blank_count > 2: return False
 
@@ -375,13 +375,13 @@ def is_block(clip, thread=0.15):
     # bottom border - scan bottom up
     blank_count = 0
     for i in range(-1, -5, -1):
-        if sum(clip[side + i]) / 255 > thread * clip.shape[1]:
+        if clip[side + i].astype(np.int32).sum() / 255 > thread * clip.shape[1]:
             blank_count += 1
     if blank_count > 2: return False
     # right border - scan right to left
     blank_count = 0
     for i in range(-1, -5, -1):
-        if sum(clip[:, side + i]) / 255 > thread * clip.shape[0]:
+        if clip[:, side + i].astype(np.int32).sum() / 255 > thread * clip.shape[0]:
             blank_count += 1
     if blank_count > 2: return False
     return True

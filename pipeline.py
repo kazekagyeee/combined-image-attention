@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import shutil
 from pathlib import Path
 from PIL import Image
 from tqdm import tqdm
@@ -119,10 +120,14 @@ class VLMPipeline:
         for img_path in tqdm(image_files, desc="Processing images with individual prompts"):
             # Получаем промт для текущего изображения
             img_name = Path(img_path).name
-            # По контракту название промта такое же как у изображения
-            prompt = clean_text_from_file(
-                self.config.input_dir + '/' + img_name.replace('.png', '.txt')
-            )
+            txt_name = Path(img_name).stem + '.txt'
+
+            # Копируем оригинальное (необрезанное) изображение в out_dir
+            shutil.copy(img_path, os.path.join(self.config.out_dir, img_name))
+
+            # По контракту текстовый файл имеет то же имя (без расширения) что и изображение
+            txt_file = os.path.join(self.config.input_dir, txt_name)
+            prompt = clean_text_from_file(txt_file)
 
             items = self.process_image(img_path, prompt=prompt)
             all_metadata.extend(items)
@@ -145,8 +150,10 @@ class VLMPipeline:
                                 max(0.0, min(1.0, b[3]/h_img))
                             ]
 
+                        # Используем относительный путь, чтобы датасет был переносимым
+                        rel_img = os.path.join(".", img_name)
                         triplet_data.append({
-                            "image_path": item["orig_path"],
+                            "image_path": rel_img,
                             "text": item["caption"],
                             "pos_bbox": normalize_bbox(item["bbox"]),
                             "neg_bbox": normalize_bbox(neg_item["bbox"])
