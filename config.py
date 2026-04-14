@@ -10,7 +10,7 @@ class PipelineConfig:
     out_dir: str = "./out"
     # Prompt for two images needs to be like: "The first image is the full picture, the second is a cropped part of it. Describe what you see in the cropped part and its relation to the full image."
     system_prompt: str = ("Первое изображение - полное, второе - вырезанная часть полного. "
-                          "Опиши то что ты видишь на втором изображении, отталкиваясь от первого, "
+                          "Опиши то что ты видишь на вырезанной части изображения, отталкиваясь от полного, "
                           "учитывая текст из мануала, описывающего контекст первого изображения: ") # if captioner = blip, prompt needs to be in english
     device: str = "cuda"
     json_filename: str = "metadata.json"
