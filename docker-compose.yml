@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  vlm-pipeline:
+    network_mode: "host"
+    build: .
+    container_name: vlm_pipeline_container
+    # Настройка доступа к GPU NVIDIA
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Монтируем текущую папку, чтобы результаты сохранялись на хосте (Windows)
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Настройка для vLLM, чтобы он видел CUDA внутри Docker
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    stdin_open: true # Аналог -i
+    tty: true        # Аналог -t
+    command: python vlm_pipeline.py

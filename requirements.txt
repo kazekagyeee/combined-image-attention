@@ -12,3 +12,4 @@ accelerate
 opencv-python
 tiktoken
 plotly
+vllm

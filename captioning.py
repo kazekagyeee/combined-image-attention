@@ -72,157 +72,103 @@ class CaptionerBLIP(CaptionerBase):
         return caption
 
 class CaptionerQwen(CaptionerBase):
-    """Генератор текстовых описаний для изображений с помощью Qwen2‑VL‑3B."""
+    """Генератор текстовых описаний для изображений с помощью Qwen2‑VL‑3B через vLLM."""
 
     def __init__(self, model_name = "Qwen/Qwen2.5-VL-3B-Instruct", device='cuda'):
         super().__init__(device)
-        print("Loading Qwen2‑VL model:", model_name)
-        # Загружаем процессор (tokenizer + визуальную часть)
+        print("Loading Qwen2‑VL model with vLLM:", model_name)
+        from vllm import LLM
+        from transformers import AutoProcessor
+        
+        # Получаем процессор для работы с шаблоном чата
         self.processor = AutoProcessor.from_pretrained(model_name)
-        # Загружаем модель
-        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            model_name,
-            device_map=device,
-            torch_dtype=torch.float16  # рекомендовано для памяти
+
+        # vLLM manages its own device placement based on CUDA availability
+        self.model = LLM(
+            model=model_name,
+            limit_mm_per_prompt={"image": 2}, # Поддержка до 2 изображений в 1 промпте
+            max_model_len=4096, # Ограничение контекста для экономии памяти
+            trust_remote_code=True,
+            dtype="half", # использовать float16
+            gpu_memory_utilization=0.9
         )
-        self.model.to(device)
 
     def describe(self, image: Image.Image, prompt: str = None, max_length=128) -> str:
         """
-        Генерирует описание для изображения. При наличии `prompt` — вставляет его вместе с картинкой.
-        prompt — это текст, который задает, что именно делать с изображением.
+        Генерирует описание для изображения через vLLM.
         """
-        # Подготовка сообщения в формате, который ждет Qwen2‑VL
-        # Qwen2VL ожидает "chat template" — список сообщений с ролями и контентом
-        # Контент — это список dict, с type="image" и type="text"
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": image},
+                    {"type": "image"},
                     {"type": "text", "text": prompt or "Describe this image."},
                 ],
             }
         ]
-        # Преобразуем сообщения в текстовый токен-представление
-        text = self.processor.apply_chat_template(messages, add_generation_prompt=True)
-        # Обрабатываем изображение и текст вместе
-        inputs = self.processor(
-            text=[text],
-            images=[image],
-            padding=True,
-            return_tensors="pt",
-        ).to(self.device)
+        
+        # Формируем текстовый промпт через шаблон Qwen2-VL
+        prompt_text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 
-        # Генерируем
-        # Генерируем
-        generated_ids = self.model.generate(
-            **inputs,
-            max_new_tokens=max_length,
-            eos_token_id=self.processor.tokenizer.eos_token_id,
-            do_sample=True,  # Включить сэмплирование вместо жадного поиска
-            temperature=0.6,  # Увеличить температуру (0.7-1.0)
-            top_p=0.75,  # Использовать nucleus sampling
-            top_k=75,  # Ограничить выбор топ-k токенов
-            repetition_penalty=1.1,  # Штраф за повторения
-            num_beams=1,  # Отключить beam search (уменьшает копирование)
-            no_repeat_ngram_size=3,  # Запретить повторение n-грамм
+        from vllm import SamplingParams
+        sampling_params = SamplingParams(
+            temperature=0.6,
+            top_p=0.75,
+            max_tokens=max_length,
+            repetition_penalty=1.1,
+            top_k=75
         )
 
-        # Декодируем весь вывод
-        full_output = self.processor.batch_decode(
-            generated_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True,
-            skip_prompt=True  # Пропускаем промпт при декодировании
-        )[0]
-
-        # Убираем возможные остатки промпта или меток ассистента
-        if "<|im_start|>assistant" in full_output:
-            caption = full_output.split("<|im_start|>assistant")[-1].strip()
-        else:
-            # Альтернативный подход: убираем все до последнего промпта
-            user_text = prompt or "Describe this image."
-            if user_text in full_output:
-                parts = full_output.split(user_text)
-                if len(parts) > 1:
-                    caption = parts[-1].strip()
-                else:
-                    caption = full_output
-            else:
-                caption = full_output
-
-        # Убираем возможные теги и лишние пробелы
-        caption = caption.replace("<|im_end|>", "").replace("<|endoftext|>", "").strip()
-
-        return caption
+        # Используем generate() вместо chat() для стабильности
+        # В vLLM 0.6+ данные мультимедиа передаются внутри словаря в первом аргументе
+        outputs = self.model.generate(
+            {
+                "prompt": prompt_text,
+                "multi_modal_data": {"image": image},
+            },
+            sampling_params=sampling_params
+        )
+        
+        return outputs[0].outputs[0].text.strip()
 
     def describe_two_images(self, full_image: Image.Image, cropped_image: Image.Image,
                             prompt: str = None, max_length=256) -> str:
         """
-        Генерирует описание, анализируя два изображения.
-
-        Args:
-            full_image (Image.Image): Полное изображение.
-            cropped_image (Image.Image): Часть полного изображения.
-            prompt (str): Текстовый запрос к модели (например, "What is the difference?").
-            max_length (int): Максимальная длина ответа.
-
-        Returns:
-            str: Текстовый ответ модели.
+        Генерирует описание, анализируя два изображения через vLLM.
         """
-        # Формируем мультимодальное сообщение с двумя изображениями
         messages = [
             {
                 "role": "user",
                 "content": [
-                    {"type": "image", "image": full_image},
-                    {"type": "image", "image": cropped_image},
+                    {"type": "image"},
+                    {"type": "image"},
                     {"type": "text", "text": prompt},
                 ],
             }
         ]
 
-        # Применяем шаблон чата и обрабатываем изображения
-        text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+        # Применяем шаблон чата для двух изображений
+        prompt_text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+
+        from vllm import SamplingParams
+        sampling_params = SamplingParams(
+            temperature=0.6,
+            top_p=0.75,
+            max_tokens=max_length,
+            repetition_penalty=1.1,
+            top_k=75
         )
 
-        # Извлекаем изображения из сообщений для обработки
-        image_inputs = [full_image, cropped_image]
-
-        inputs = self.processor(
-            text=[text],
-            images=image_inputs,
-            padding=True,
-            return_tensors="pt",
-        ).to(self.device)
-
-        # Генерируем ответ
-        generated_ids = self.model.generate(
-            **inputs,
-            max_new_tokens=max_length,
-            eos_token_id=self.processor.tokenizer.eos_token_id,
-            do_sample=True,  # Включить сэмплирование вместо жадного поиска
-            temperature=0.6,  # Увеличить температуру (0.7-1.0)
-            top_p=0.75,  # Использовать nucleus sampling
-            top_k=75,  # Ограничить выбор топ-k токенов
-            repetition_penalty=1.1,  # Штраф за повторения
-            num_beams=1,  # Отключить beam search (уменьшает копирование)
-            no_repeat_ngram_size=3,  # Запретить повторение n-грамм
+        # Передаем список изображений в одном запросе внутри словаря
+        outputs = self.model.generate(
+            {
+                "prompt": prompt_text,
+                "multi_modal_data": {"image": [full_image, cropped_image]},
+            },
+            sampling_params=sampling_params
         )
 
-        # Важный шаг: обрезаем input_ids (промпт) из generated_ids
-        generated_ids = generated_ids[0][inputs.input_ids.shape[1]:]
-
-        # Декодируем только сгенерированную часть
-        caption = self.processor.decode(
-            generated_ids,
-            skip_special_tokens=True,
-            clean_up_tokenization_spaces=True
-        ).strip()
-
-        return caption
+        return outputs[0].outputs[0].text.strip()
 
 
 class CaptionerGLM(CaptionerBase):
