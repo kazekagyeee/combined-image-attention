@@ -357,6 +357,8 @@ def is_block(clip, thread=0.15):
     Block is a rectangle border enclosing a group of compos (consider it as a wireframe)
     Check if a compo is block by checking if the inner side of its border is blank
     '''
+    if clip.shape[0] <= 8 or clip.shape[1] <= 8:
+        return False
     side = 4  # scan 4 lines inner forward each border
     # top border - scan top down
     blank_count = 0

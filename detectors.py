@@ -170,7 +170,7 @@ class UIEDDetector(DetectorBase):
 
             if not os.path.exists(compo_json_path):
                 print("⚠️ UIED did not generate compo.json")
-                return []
+                return [], image
 
             # --- 5) Читаем JSON и приводим к формату DetectorBase ---
             import json

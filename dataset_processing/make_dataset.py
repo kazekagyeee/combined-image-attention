@@ -18,6 +18,8 @@ import subprocess
 import fitz  # PyMuPDF
 
 
+# ── Настройки ─────────────────────────────────────────────────────────────────
+MIN_CONTEXT_LEN = 400  # Минимальное количество символов контекста
 # ── Пути ──────────────────────────────────────────────────────────────────────
 # Директория, в которую распакуем RAR
 SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
@@ -33,71 +35,104 @@ OUT_DIR       = os.path.join(PROJECT_ROOT, "images")
 def extract_pdf_data(path, skip_first_images=0, skip_last_images=0,
                      out_dir="../images", pdf_index=0):
     """
-    Извлекает изображения и ближайший к ним текст из PDF.
-    Изображения и парные .txt-файлы сохраняются прямо в out_dir
-    (без вложенных папок images/ и texts/), чтобы pipeline.py находил их по
-    схеме img.stem + '.txt'.
-
-    Параметры
-    ---------
-    path              : путь к PDF
-    skip_first_images : сколько первых изображений пропустить
-    skip_last_images  : сколько последних изображений пропустить
-    out_dir           : куда сохранять файлы
-    pdf_index         : уникальный индекс PDF (для именования файлов)
-
-    Возвращает
-    ----------
-    (all_text, image_text_pairs)
+    Извлекает изображения и расширенный контекст вокруг них из PDF.
     """
     os.makedirs(out_dir, exist_ok=True)
 
     doc = fitz.open(path)
-    all_text = ""
     images_info = []
+    all_text_blocks = [] # Список всех текстовых блоков во всем PDF
+    all_text = ""        # Полный текст PDF (сохраняем для обратной совместимости)
 
+    # 1. Сначала собираем ВСЕ текстовые блоки из всего документа
+    # Это нужно для "межстраничного" поиска контекста
     for page_num in range(len(doc)):
         page = doc[page_num]
-        all_text += page.get_text() + "\n"
-
-        # Текстовые блоки страницы
+        page_text = page.get_text()
+        all_text += page_text + "\n"
+        
         blocks = page.get_text("blocks")
-        text_blocks = [b for b in blocks if b[6] == 0]  # block_type == 0 → текст
+        for b in blocks:
+            if b[6] == 0: # только текст
+                all_text_blocks.append({
+                    "page": page_num,
+                    "bbox": b[:4],
+                    "text": b[4],
+                    "y_mid": (b[1] + b[3]) / 2
+                })
 
-        # Изображения на странице
+    # 2. Собираем информацию об изображениях
+    for page_num in range(len(doc)):
+        page = doc[page_num]
         for img_info in page.get_images(full=True):
             xref = img_info[0]
-
             rects = page.get_image_rects(xref)
-            if not rects:
-                continue
+            if not rects: continue
 
             img_rect = rects[0]
-            img_cx = (img_rect.x0 + img_rect.x1) / 2
             img_cy = (img_rect.y0 + img_rect.y1) / 2
 
-            # Ближайший текстовый блок по Евклидову расстоянию
-            closest_text = ""
-            min_dist = float("inf")
-            for tb in text_blocks:
-                tb_cx = (tb[0] + tb[2]) / 2
-                tb_cy = (tb[1] + tb[3]) / 2
-                dist = math.hypot(img_cx - tb_cx, img_cy - tb_cy)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_text = tb[4]
+            # Находим "опорный" блок на этой же странице (самый близкий по Y)
+            anchor_idx = -1
+            min_y_dist = float("inf")
+            
+            for i, b in enumerate(all_text_blocks):
+                if b["page"] == page_num:
+                    dist = abs(b["y_mid"] - img_cy)
+                    if dist < min_y_dist:
+                        min_y_dist = dist
+                        anchor_idx = i
+            
+            # Если на странице нет текста, ищем ближайший по индексу страницы блок
+            if anchor_idx == -1 and all_text_blocks:
+                # Находим первый блок на следующей странице или последний на предыдущей
+                for i, b in enumerate(all_text_blocks):
+                    if b["page"] > page_num:
+                        anchor_idx = i
+                        break
+                if anchor_idx == -1: # Значит все блоки раньше
+                    anchor_idx = len(all_text_blocks) - 1
+
+            # 3. Расширяем контекст (вверх и вниз), пока не наберем MIN_CONTEXT_LEN
+            context_parts = []
+            if anchor_idx != -1:
+                start_i = anchor_idx
+                end_i = anchor_idx
+                
+                # Добавляем центральный блок
+                current_text = all_text_blocks[anchor_idx]["text"]
+                
+                # Расширяем в обе стороны
+                while len(current_text) < MIN_CONTEXT_LEN:
+                    expanded = False
+                    # Пробуем взять блок выше
+                    if start_i > 0:
+                        start_i -= 1
+                        current_text = all_text_blocks[start_i]["text"].rstrip() + "\n" + current_text.lstrip()
+                        expanded = True
+                    
+                    if len(current_text) >= MIN_CONTEXT_LEN: break
+                    
+                    # Пробуем взять блок ниже
+                    if end_i < len(all_text_blocks) - 1:
+                        end_i += 1
+                        current_text = current_text.rstrip() + "\n" + all_text_blocks[end_i]["text"].lstrip()
+                        expanded = True
+                    
+                    if not expanded: break
+                
+                final_text = current_text.strip()
+            else:
+                final_text = ""
 
             # Байты изображения
-            base_image  = doc.extract_image(xref)
-            image_bytes = base_image["image"]
-            image_ext   = base_image["ext"]
-
+            base_image = doc.extract_image(xref)
             images_info.append({
-                "page":  page_num,
-                "xref":  xref,
-                "ext":   image_ext,
-                "bytes": image_bytes,
-                "text":  closest_text.strip(),
+                "page": page_num,
+                "xref": xref,
+                "ext": base_image["ext"],
+                "bytes": base_image["image"],
+                "text": final_text,
             })
 
     doc.close()

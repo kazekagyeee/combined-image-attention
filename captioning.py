@@ -87,11 +87,17 @@ class CaptionerQwen(CaptionerBase):
         self.model = LLM(
             model=model_name,
             limit_mm_per_prompt={"image": 2}, # Поддержка до 2 изображений в 1 промпте
-            max_model_len=4096, # Ограничение контекста для экономии памяти
+            max_model_len=16384, # Увеличили лимит, чтобы токены от 2-х картинок гарантированно влезали
             trust_remote_code=True,
             dtype="half", # использовать float16
             gpu_memory_utilization=0.9
         )
+
+    def _prepare_image(self, image: Image.Image, max_dim=1024) -> Image.Image:
+        """Оптимизирует размер картинки для VLM, чтобы избежать взрывного роста токенов."""
+        if max(image.size) > max_dim:
+            image.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+        return image
 
     def describe(self, image: Image.Image, prompt: str = None, max_length=128) -> str:
         """
@@ -124,7 +130,7 @@ class CaptionerQwen(CaptionerBase):
         outputs = self.model.generate(
             {
                 "prompt": prompt_text,
-                "multi_modal_data": {"image": image},
+                "multi_modal_data": {"image": self._prepare_image(image)},
             },
             sampling_params=sampling_params
         )
@@ -160,10 +166,13 @@ class CaptionerQwen(CaptionerBase):
         )
 
         # Передаем список изображений в одном запросе внутри словаря
+        # Делаем ресайз обеих картинок, чтобы не вылететь за лимит 16к токенов
         outputs = self.model.generate(
             {
                 "prompt": prompt_text,
-                "multi_modal_data": {"image": [full_image, cropped_image]},
+                "multi_modal_data": {
+                    "image": [self._prepare_image(full_image), self._prepare_image(cropped_image)]
+                },
             },
             sampling_params=sampling_params
         )
